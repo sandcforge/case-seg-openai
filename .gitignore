@@ -4,6 +4,12 @@ out/
 # Assets directory - input data files
 assets/
 
+# Environment variables
+.env
+
+# Debug output files
+debug_output/
+
 # Python cache files
 __pycache__/
 *.py[cod]

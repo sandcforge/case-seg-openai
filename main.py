@@ -15,11 +15,17 @@ Example:
 
 import os
 import argparse
-import pandas as pd
-import pytz
+import pandas as pd # type: ignore
+import pytz # type: ignore
 from pathlib import Path
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
+from dotenv import load_dotenv # type: ignore
+import anthropic # type: ignore
+from datetime import datetime
+
+# Load environment variables
+load_dotenv()
 
 
 @dataclass
@@ -33,6 +39,7 @@ class Chunk:
     total_messages: int              # Number of messages in this chunk
     has_overlap_with_previous: bool  # Whether this chunk overlaps with previous chunk
     overlap_size: int                # Number of overlapping messages with previous chunk
+    tail_summary: Optional[str] = None  # Generated tail summary for next chunk
 
     def get_message_indices(self) -> List[int]:
         """Get list of msg_ch_idx values for messages in this chunk"""
@@ -51,6 +58,316 @@ class Chunk:
                 f"{row['msg_ch_idx']} | {row['Sender ID']} | {row['role']} | {row['Created Time']} | {message_text}"
             )
         return '\n'.join(formatted_lines)
+    
+    def get_tail_messages(self, overlap_size: int) -> List[str]:
+        """Get the last N messages from this chunk for tail summary"""
+        if len(self.messages) == 0:
+            return []
+        
+        # Get the last 'overlap_size' messages, but at least 5 if available
+        num_messages = max(min(overlap_size, len(self.messages)), min(5, len(self.messages)))
+        tail_messages = self.messages.tail(num_messages)
+        
+        formatted_messages = []
+        for _, row in tail_messages.iterrows():
+            # Format: msg_ch_idx | sender id=sender_id | role=role | ISO timestamp | text=truncated text
+            message_text = str(row['Message']).replace('\n', ' ').replace('\r', ' ')
+            if message_text == 'nan':
+                message_text = ''
+            
+            # Truncate long messages
+            if len(message_text) > 150:
+                message_text = message_text[:150] + '...'
+            
+            formatted_messages.append(
+                f"- {row['msg_ch_idx']} | sender id={row['Sender ID']} | role={row['role']} | {row['Created Time']} | text={message_text}"
+            )
+        
+        return formatted_messages
+    
+    def extract_case_hints(self, complete_cases: List[Dict[str, Any]]) -> List[str]:
+        """Extract active case hints from complete_cases for tail summary"""
+        if not complete_cases:
+            return ["None"]
+        
+        hints = []
+        for case in complete_cases[:5]:  # Max 5 hints as per prompt
+            status = case.get('status', 'open').lower()
+            
+            # Only include unresolved cases
+            if status in ['open', 'ongoing', 'blocked']:
+                msg_list = case.get('msg_list', [])
+                summary = case.get('summary', 'Case summary not available')
+                
+                # Extract key information from summary (simplified version)
+                hint = f"- topic: \"{summary[:50]}{'...' if len(summary) > 50 else ''}\"\n"
+                hint += f"  status: \"{status}\"\n"
+                hint += f"  evidence_msg_ch_idx: {msg_list}"
+                
+                hints.append(hint)
+        
+        return hints if hints else ["None"]
+    
+    def generate_tail_summary(self, complete_cases: List[Dict[str, Any]], overlap_size: int, 
+                            llm_client: 'LLMClient', previous_context: str = "") -> str:
+        """Generate tail summary using LLM for the next chunk"""
+        # Load the prompt template
+        try:
+            prompt_template = load_prompt("tail_summary_prompt.md")
+        except FileNotFoundError as e:
+            raise RuntimeError(f"Cannot load tail summary prompt: {e}")
+        
+        # Get recent messages from this chunk
+        recent_messages = self.get_tail_messages(overlap_size)
+        recent_messages_block = '\n'.join(recent_messages)
+        
+        # Get current chunk messages for analysis
+        chunk_messages_block = self.format_for_prompt()
+        
+        # Extract case hints
+        case_hints = self.extract_case_hints(complete_cases)
+        case_hints_block = '\n'.join(case_hints)
+        
+        # Get time window
+        if len(self.messages) > 0:
+            start_time = self.messages.iloc[0]['Created Time']
+            end_time = self.messages.iloc[-1]['Created Time']
+            time_window = f'["{start_time}", "{end_time}"]'
+        else:
+            time_window = '["N/A", "N/A"]'
+        
+        # Build previous context block
+        if previous_context:
+            context_block = previous_context
+        else:
+            # Build context block for this chunk
+            context_block = f"""ACTIVE_CASE_HINTS:
+{case_hints_block}
+
+RECENT_MESSAGES:
+{recent_messages_block}
+
+META (optional):
+- overlap: {overlap_size}
+- channel: {self.channel_url[:50]}{'...' if len(self.channel_url) > 50 else ''}
+- time_window: {time_window}"""
+        
+        # Replace placeholders in prompt
+        final_prompt = prompt_template.replace(
+            "<<<INSERT_PREVIOUS_CONTEXT_SUMMARY_BLOCK_HERE>>>", 
+            context_block
+        ).replace(
+            "<<<INSERT_CHUNK_BLOCK_HERE>>>", 
+            chunk_messages_block
+        )
+        
+        # Generate tail summary using LLM
+        try:
+            self.tail_summary = llm_client.generate(final_prompt, call_label="tail_summary")
+            return self.tail_summary
+        except Exception as e:
+            raise RuntimeError(f"Failed to generate tail summary for chunk {self.chunk_id}: {e}")
+    
+    def generate_case_segments(self, 
+                             current_messages: str, 
+                             previous_tail_summary: Optional[str], 
+                             llm_client: 'LLMClient') -> Dict[str, Any]:
+        """Generate case segments using LLM for current chunk messages"""
+        # Load the segmentation prompt template
+        try:
+            prompt_template = load_prompt("segmentation_prompt.md")
+        except FileNotFoundError as e:
+            raise RuntimeError(f"Cannot load segmentation prompt: {e}")
+        
+        # Handle previous context
+        if previous_tail_summary is None:
+            context_block = "No previous context"
+        else:
+            context_block = previous_tail_summary
+        
+        # Replace placeholders in prompt template
+        final_prompt = prompt_template.replace(
+            "<<<INSERT_PREVIOUS_CONTEXT_SUMMARY_BLOCK_HERE>>>", 
+            context_block
+        ).replace(
+            "<<<INSERT_CHUNK_BLOCK_HERE>>>", 
+            current_messages
+        )
+        
+        # Generate case segments using LLM
+        try:
+            response = llm_client.generate(final_prompt, call_label="case_segmentation")
+            
+            # Parse JSON response
+            import json
+            try:
+                # Try direct JSON parsing first
+                result = json.loads(response)
+                
+                # Validate case segmentation results
+                validation_result = self._validate_case_segmentation(result)
+                if validation_result['warnings']:
+                    print(f"⚠️ Validation warnings for chunk {self.chunk_id}:")
+                    for warning in validation_result['warnings']:
+                        print(f"  {warning}")
+                else:
+                    print(f"✅ Case segmentation validation passed for chunk {self.chunk_id}")
+                    print(f"   Coverage: {validation_result['coverage']:.1f}% ({validation_result['total_cases']} cases)")
+                
+            except json.JSONDecodeError:
+                # Fallback: extract JSON from response using regex
+                import re
+                json_match = re.search(r'\{.*\}', response, re.DOTALL)
+                if json_match:
+                    result = json.loads(json_match.group())
+                    
+                    # Validate case segmentation results for fallback parsing too
+                    validation_result = self._validate_case_segmentation(result)
+                    if validation_result['warnings']:
+                        print(f"⚠️ Validation warnings for chunk {self.chunk_id}:")
+                        for warning in validation_result['warnings']:
+                            print(f"  {warning}")
+                    else:
+                        print(f"✅ Case segmentation validation passed for chunk {self.chunk_id}")
+                        print(f"   Coverage: {validation_result['coverage']:.1f}% ({validation_result['total_cases']} cases)")
+                else:
+                    raise ValueError("No valid JSON found in LLM response")
+            
+            return result
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to generate case segments for chunk {self.chunk_id}: {e}")
+    
+    def _validate_case_segmentation(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate case segmentation results for coverage and uniqueness"""
+        complete_cases = result.get('complete_cases', [])
+        
+        # Extract all assigned messages and track assignments
+        all_assigned_messages = []
+        message_to_cases = {}
+        
+        for case_idx, case in enumerate(complete_cases):
+            msg_list = case.get('msg_list', [])
+            case_id = case_idx + 1
+            
+            for msg_idx in msg_list:
+                all_assigned_messages.append(msg_idx)
+                
+                if msg_idx not in message_to_cases:
+                    message_to_cases[msg_idx] = []
+                message_to_cases[msg_idx].append(case_id)
+        
+        # Find issues
+        expected_messages = set(range(self.total_messages))
+        assigned_messages = set(all_assigned_messages)
+        missing_messages = sorted(expected_messages - assigned_messages)
+        duplicate_assignments = {msg: cases for msg, cases in message_to_cases.items() if len(cases) > 1}
+        
+        # Calculate coverage
+        coverage_percentage = len(assigned_messages) / self.total_messages * 100
+        
+        # Generate warnings
+        warnings = []
+        if missing_messages:
+            warnings.append(f"Missing {len(missing_messages)} messages: {missing_messages}")
+        if duplicate_assignments:
+            warnings.append(f"Duplicate assignments for {len(duplicate_assignments)} messages:")
+            for msg_idx, cases in sorted(duplicate_assignments.items()):
+                warnings.append(f"  Message {msg_idx} in cases: {cases}")
+        if coverage_percentage < 100:
+            warnings.append(f"Coverage: {coverage_percentage:.1f}% ({len(assigned_messages)}/{self.total_messages})")
+        
+        return {
+            'warnings': warnings,
+            'coverage': coverage_percentage,
+            'missing': missing_messages,
+            'duplicates': duplicate_assignments,
+            'total_cases': len(complete_cases),
+            'unique_assigned': len(assigned_messages)
+        }
+
+
+def load_prompt(filename: str) -> str:
+    """Load prompt template from prompts directory"""
+    prompt_path = os.path.join("prompts", filename)
+    try:
+        with open(prompt_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Prompt file not found: {prompt_path}")
+
+
+class LLMClient:
+    """Simple LLM client for Claude API calls"""
+    
+    def __init__(self, model: str = "claude-3-5-sonnet-20241022", api_key: Optional[str] = None):
+        self.model = model
+        self.api_key = api_key or os.getenv('ANTHROPIC_API_KEY')
+        
+        if not self.api_key:
+            raise ValueError("ANTHROPIC_API_KEY not found. Please set it in .env file or pass as argument")
+        
+        self.client = anthropic.Anthropic(api_key=self.api_key)
+    
+    def generate(self, prompt: str, call_label: str = "unknown", max_tokens: int = 4000) -> str:
+        """Generate response using Claude API with debug logging"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create debug output directory if it doesn't exist
+        debug_dir = "debug_output"
+        os.makedirs(debug_dir, exist_ok=True)
+        
+        # Generate debug log filename
+        debug_file = os.path.join(debug_dir, f"{call_label}_{timestamp}.log")
+        
+        try:
+            # Log the request
+            with open(debug_file, 'w', encoding='utf-8') as f:
+                f.write("=== LLM CALL DEBUG LOG ===\n")
+                f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Call Label: {call_label}\n")
+                f.write(f"Model: {self.model}\n")
+                f.write(f"Max Tokens: {max_tokens}\n")
+                f.write(f"Prompt Length: {len(prompt)} characters\n")
+                f.write("\n=== PROMPT ===\n")
+                f.write(prompt)
+                f.write("\n\n")
+            
+            # Make the API call
+            message = self.client.messages.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            
+            response = message.content[0].text
+            
+            # Log the successful response
+            with open(debug_file, 'a', encoding='utf-8') as f:
+                f.write("=== RESPONSE ===\n")
+                f.write(response)
+                f.write(f"\n\nResponse Length: {len(response)} characters\n")
+                f.write("\n=== STATUS ===\n")
+                f.write("Success: LLM call completed successfully\n")
+            
+            print(f"Debug log saved: {debug_file}")
+            return response
+            
+        except Exception as e:
+            # Log the error
+            try:
+                with open(debug_file, 'a', encoding='utf-8') as f:
+                    f.write("=== ERROR ===\n")
+                    f.write(f"Error: {str(e)}\n")
+                    f.write(f"Error Type: {type(e).__name__}\n")
+                    f.write("\n=== STATUS ===\n")
+                    f.write(f"Failed: LLM call failed - {str(e)}\n")
+            except:
+                pass  # If debug logging fails, don't break the main functionality
+            
+            raise RuntimeError(f"LLM generation failed ({call_label}): {e}")
 
 
 class FileProcessor:
@@ -303,6 +620,15 @@ def main() -> None:
         default=20,
         help='Overlap size between chunks, must be < chunk_size/3 (default: 20)'
     )
+    parser.add_argument(
+        '--model', '-m',
+        default='claude-sonnet-4-20250514',
+        help='LLM model to use for tail summary generation (default: claude-sonnet-4-20250514)'
+    )
+    parser.add_argument(
+        '--api-key',
+        help='API key for LLM provider (default: from ANTHROPIC_API_KEY env var)'
+    )
     
     args = parser.parse_args()
     
@@ -319,8 +645,51 @@ def main() -> None:
         segmenter = ChannelSegmenter(df_clean, args.chunk_size, args.overlap)
         chunks = segmenter.generate_chunks()
         
-        print(f"\n✅ Pipeline complete!")
         print(f"Generated {len(chunks)} chunks with chunk_size={args.chunk_size}, overlap={args.overlap}")
+        
+        # Stage 3: Initialize LLM Client for case segmentation
+        llm_client = LLMClient(model=args.model, api_key=args.api_key)
+        print(f"LLM Client initialized with model: {args.model}")
+        
+        # Stage 4: Case Segmentation on First Chunk
+        if chunks:
+            print(f"\n--- Stage 4: Case Segmentation on First Chunk ---")
+            first_chunk = chunks[0]
+            print(f"Processing chunk {first_chunk.chunk_id} with {first_chunk.total_messages} messages...")
+            
+            # Format messages for case segmentation
+            current_messages = first_chunk.format_for_prompt()
+            
+            # Generate case segments (no previous context for first chunk)
+            print("Generating case segments using LLM...")
+            case_results = first_chunk.generate_case_segments(
+                current_messages=current_messages,
+                previous_tail_summary=None,
+                llm_client=llm_client
+            )
+            
+            # Display results
+            complete_cases = case_results.get('complete_cases', [])
+            total_analyzed = case_results.get('total_messages_analyzed', 0)
+            
+            print(f"✅ Case segmentation complete!")
+            print(f"Found {len(complete_cases)} cases in {total_analyzed} messages")
+            
+            # Show case summary
+            for i, case in enumerate(complete_cases):
+                print(f"  Case {i+1}: {case.get('summary', 'No summary')[:100]}...")
+                print(f"    Status: {case.get('status', 'unknown')} | Active: {case.get('is_active_case', False)} | Messages: {len(case.get('msg_list', []))}")
+            
+            # Save results to JSON file
+            import json
+            output_file = os.path.join(args.output_dir, f"first_chunk_cases.json")
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(case_results, f, indent=2, ensure_ascii=False)
+            print(f"Case results saved to: {output_file}")
+        else:
+            print("No chunks available for case segmentation")
+        
+        print(f"\n✅ Pipeline complete!")
         
     except ValueError as e:
         print(f"Error: {e}")
