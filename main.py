@@ -204,15 +204,8 @@ META (optional):
                 # Try direct JSON parsing first
                 result = json.loads(response)
                 
-                # Validate case segmentation results
-                validation_result = self._validate_case_segmentation(result)
-                if validation_result['warnings']:
-                    print(f"⚠️ Validation warnings for chunk {self.chunk_id}:")
-                    for warning in validation_result['warnings']:
-                        print(f"  {warning}")
-                else:
-                    print(f"✅ Case segmentation validation passed for chunk {self.chunk_id}")
-                    print(f"   Coverage: {validation_result['coverage']:.1f}% ({validation_result['total_cases']} cases)")
+                # Validate and fix case segmentation results
+                result = self._validate_and_fix_result(result)
                 
             except json.JSONDecodeError:
                 # Fallback: extract JSON from response using regex
@@ -221,15 +214,8 @@ META (optional):
                 if json_match:
                     result = json.loads(json_match.group())
                     
-                    # Validate case segmentation results for fallback parsing too
-                    validation_result = self._validate_case_segmentation(result)
-                    if validation_result['warnings']:
-                        print(f"⚠️ Validation warnings for chunk {self.chunk_id}:")
-                        for warning in validation_result['warnings']:
-                            print(f"  {warning}")
-                    else:
-                        print(f"✅ Case segmentation validation passed for chunk {self.chunk_id}")
-                        print(f"   Coverage: {validation_result['coverage']:.1f}% ({validation_result['total_cases']} cases)")
+                    # Validate and fix case segmentation results for fallback parsing too
+                    result = self._validate_and_fix_result(result)
                 else:
                     raise ValueError("No valid JSON found in LLM response")
             
@@ -285,6 +271,107 @@ META (optional):
             'total_cases': len(complete_cases),
             'unique_assigned': len(assigned_messages)
         }
+    
+    def _fix_assignment_issues(self, result: Dict[str, Any], validation_result: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply simple policies to fix missing and duplicate message assignments"""
+        complete_cases = result.get('complete_cases', [])
+        actions_taken = []
+        
+        # Fix missing messages
+        for missing_msg in validation_result.get('missing', []):
+            best_case_idx = self._find_closest_case(missing_msg, complete_cases)
+            case_summary = complete_cases[best_case_idx]['summary'][:50] + "..."
+            complete_cases[best_case_idx]['msg_list'].append(missing_msg)
+            complete_cases[best_case_idx]['msg_list'].sort()
+            actions_taken.append(f"  ➕ Added missing msg {missing_msg} to case {best_case_idx + 1}: \"{case_summary}\"")
+        
+        # Fix duplicate assignments (confidence-based)
+        for msg_idx, case_list in validation_result.get('duplicates', {}).items():
+            # Find case with highest confidence, or first case if tied
+            best_case_id = self._select_best_case_for_message(case_list, complete_cases)
+            best_case_summary = complete_cases[best_case_id - 1]['summary'][:50] + "..."
+            best_confidence = complete_cases[best_case_id - 1].get('confidence', 0)
+            
+            removed_from = []
+            # Remove message from all cases except the best one
+            for case_idx, case in enumerate(complete_cases):
+                case_id = case_idx + 1
+                if msg_idx in case['msg_list'] and case_id != best_case_id:
+                    case['msg_list'].remove(msg_idx)
+                    removed_from.append(str(case_id))
+            
+            if removed_from:
+                actions_taken.append(f"  🎯 Kept msg {msg_idx} in case {best_case_id} (confidence: {best_confidence}): \"{best_case_summary}\"")
+                actions_taken.append(f"     Removed from cases: {', '.join(removed_from)}")
+        
+        # Log all actions taken
+        if actions_taken:
+            print("🔧 Policy actions taken:")
+            for action in actions_taken:
+                print(action)
+        
+        return result
+    
+    def _find_closest_case(self, missing_msg: int, complete_cases: List[Dict[str, Any]]) -> int:
+        """Find case index with messages closest to missing_msg"""
+        min_distance = float('inf')
+        best_case_idx = 0
+        
+        for case_idx, case in enumerate(complete_cases):
+            msg_list = case.get('msg_list', [])
+            if not msg_list:
+                continue
+                
+            # Calculate minimum distance to any message in this case
+            distance = min(abs(missing_msg - msg) for msg in msg_list)
+            
+            # Prefer smaller cases if distance is equal
+            if distance < min_distance or (distance == min_distance and len(msg_list) < len(complete_cases[best_case_idx]['msg_list'])):
+                min_distance = distance
+                best_case_idx = case_idx
+        
+        return best_case_idx
+    
+    def _select_best_case_for_message(self, case_list: List[int], complete_cases: List[Dict[str, Any]]) -> int:
+        """Select best case for duplicated message based on confidence, then order"""
+        best_case_id = case_list[0]  # Default to first case
+        best_confidence = complete_cases[best_case_id - 1].get('confidence', 0)
+        
+        for case_id in case_list:
+            case_confidence = complete_cases[case_id - 1].get('confidence', 0)
+            if case_confidence > best_confidence:
+                best_confidence = case_confidence
+                best_case_id = case_id
+        
+        return best_case_id
+    
+    def _validate_and_fix_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate case segmentation result and apply fixes if needed"""
+        validation_result = self._validate_case_segmentation(result)
+        
+        if validation_result['warnings']:
+            print(f"⚠️ Validation warnings for chunk {self.chunk_id}:")
+            for warning in validation_result['warnings']:
+                print(f"  {warning}")
+            
+            # Apply fix policy
+            result = self._fix_assignment_issues(result, validation_result)
+            print("🔧 Applied assignment fix policy")
+            
+            # Re-validate to confirm fixes
+            final_validation = self._validate_case_segmentation(result)
+            if not final_validation['warnings']:
+                print("✅ All assignment issues resolved - 100% coverage achieved")
+                print(f"   Final: {final_validation['coverage']:.1f}% ({final_validation['total_cases']} cases)")
+            else:
+                print("⚠️ Some issues remain after policy application")
+                for warning in final_validation['warnings']:
+                    print(f"  {warning}")
+        else:
+            print(f"✅ Case segmentation validation passed for chunk {self.chunk_id}")
+            print(f"   Coverage: {validation_result['coverage']:.1f}% ({validation_result['total_cases']} cases)")
+        
+        return result
 
 
 def load_prompt(filename: str) -> str:
