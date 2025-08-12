@@ -108,8 +108,12 @@ class Chunk:
         
         return hints if hints else ["None"]
     
-    def generate_tail_summary(self, complete_cases: List[Dict[str, Any]], overlap_size: int, 
-                            llm_client: 'LLMClient', previous_context: str = "") -> str:
+    def generate_tail_summary(self, 
+                            current_messages: str,
+                            case_segmentation_result: Dict[str, Any], 
+                            overlap_size: int,
+                            llm_client: 'LLMClient', 
+                            previous_context: str = "") -> str:
         """Generate tail summary using LLM for the next chunk"""
         # Load the prompt template
         try:
@@ -117,12 +121,15 @@ class Chunk:
         except FileNotFoundError as e:
             raise RuntimeError(f"Cannot load tail summary prompt: {e}")
         
+        # Extract complete cases from segmentation result
+        complete_cases = case_segmentation_result.get('complete_cases', [])
+        
         # Get recent messages from this chunk
         recent_messages = self.get_tail_messages(overlap_size)
         recent_messages_block = '\n'.join(recent_messages)
         
-        # Get current chunk messages for analysis
-        chunk_messages_block = self.format_for_prompt()
+        # Use provided current messages instead of formatting internally
+        chunk_messages_block = current_messages
         
         # Extract case hints
         case_hints = self.extract_case_hints(complete_cases)
@@ -149,7 +156,7 @@ RECENT_MESSAGES:
 
 META (optional):
 - overlap: {overlap_size}
-- channel: {self.channel_url[:50]}{'...' if len(self.channel_url) > 50 else ''}
+- channel: {self.channel_url}
 - time_window: {time_window}"""
         
         # Replace placeholders in prompt
@@ -773,6 +780,28 @@ def main() -> None:
             with open(output_file, 'w', encoding='utf-8') as f:
                 json.dump(case_results, f, indent=2, ensure_ascii=False)
             print(f"Case results saved to: {output_file}")
+            
+            # Stage 5: Generate Tail Summary for First Chunk
+            print(f"\n--- Stage 5: Tail Summary Generation for First Chunk ---")
+            print("Generating tail summary using case segmentation results...")
+            
+            tail_summary = first_chunk.generate_tail_summary(
+                current_messages=current_messages,
+                case_segmentation_result=case_results,
+                overlap_size=args.overlap,
+                llm_client=llm_client
+            )
+            
+            # Save tail summary to file
+            tail_summary_file = os.path.join(args.output_dir, "first_chunk_tail_summary.txt")
+            with open(tail_summary_file, 'w', encoding='utf-8') as f:
+                f.write(tail_summary)
+            
+            print(f"✅ Tail summary generation complete!")
+            print(f"Summary length: {len(tail_summary)} characters")
+            print(f"Tail summary saved to: {tail_summary_file}")
+            print(f"Preview: {tail_summary[:200]}{'...' if len(tail_summary) > 200 else ''}")
+            
         else:
             print("No chunks available for case segmentation")
         

@@ -39,113 +39,218 @@
   * has_overlap_with_previous, overlap_size
   * `format_for_prompt()`: 格式化为 `msg_ch_idx | sender_id | role | timestamp | text`
 
-3. **构造“上文摘要”**
+3. **每个Chunk的Case Segmentation流程**
 
-* 对每个块，取**上一个块的尾部**（最多 `overlap` 行）生成简短的“Previous context summary”：
+### 3.1 对每个Chunk执行Case Segmentation
 
-  * 列出最近几条消息（含 `message_index`、`sender id`、`role`、`timestamp` 和 `text`）。
-  * 明确提示模型：应基于这些消息推断**仍未解决的 case**，以保持跨块连续性。
-  * 列出必要的信息（建议包含：**订单/订单号**、**买家/用户标识**、**当前 case 解决状态**（open/ongoing/resolved/blocked）、**最近一次动作及时间**（例如“已改为自提/已创建退货单/已回复证明”+ 时间）、**待处理方**（seller/agent）、**关键实体**（如快递单号、SKU/产品名）、**关键关键词**（退款/换货/发货/自提/取消等）、**是否返回到旧话题**、**相关 message\_index 列表**）。
-  * 若是**第一个块**，则写明“无上文”。
+#### 3.1.1 Case Segmentation原则
 
-4. **格式化块内消息**
+* **决策标准**：
+  * **Continue vs. New Case**：继续现有case如果主题和锚点（tracking/order/buyer/topic）匹配PREVIOUS CONTEXT中的未解决case；如果是新订单/跟踪/买家/主题且与活跃case无关联，则启动新case。
+  * **锚点优先级**：`tracking_id > order_id > buyer_handle > topic`
+  * **多订单包裹**：共享同一tracking_id的多个订单→一个case，除非明确独立。
+  * **模糊处理**：不确定时，倾向于延续已有case，直至有新case的强证据。
+  * **唯一性**：每个`msg_ch_idx`属于且仅属于一个case。
 
-* 将当前块内每条消息格式化为：
-  `message_index | sender id | role | timestamp | text`
-* 汇总为纯文本区域，作为 Prompt 的 `{chunk_block}`。
+#### 3.1.2 Prompt策略
 
-5. **组装 Prompt**
+* **第一个chunk**：
+  * `previous_tail_summary = None`
+  * context_block = "No previous context"
+  * 直接对chunk消息进行case segmentation
 
-* 将“任务说明 + 决策标准 + 模糊处理策略 + 强制 JSON 输出结构 + Previous context summary + 当前块消息”拼成**单一 Prompt**：
+* **第二个及后续chunk**：
+  * `previous_tail_summary` = 前一个chunk的tail summary
+  * context_block = 完整的ACTIVE_CASE_HINTS + RECENT_MESSAGES + META结构
+  * 基于上文继续或新建cases
 
-  * 要求输出 **严格 JSON**：
+* **消息格式化**：`msg_ch_idx | sender_id | role | timestamp | text`
 
-    ```json
+#### 3.1.3 Validation和Auto-Fix Policy
+
+##### Coverage检查（100%要求）
+* 验证所有`msg_ch_idx`（0到total_messages-1）都被分配到cases中
+* 计算覆盖率：`len(assigned_messages) / total_messages * 100`
+* 要求达到100%覆盖率，否则触发auto-fix
+
+##### Missing Message处理（基于邻近度的分配）
+* **算法**：`_find_closest_case(missing_msg, complete_cases)`
+* **策略**：计算missing_msg与每个case中消息的最小距离
+* **优先级**：距离最近 > 案例规模较小（平局时）
+* **操作**：将missing_msg添加到最佳case的msg_list中并排序
+
+##### Multi-assignment处理（基于置信度的解析）
+* **算法**：`_select_best_case_for_message(case_list, complete_cases)`
+* **策略**：选择confidence最高的case保留该消息
+* **优先级**：置信度最高 > 第一个case（平局时）
+* **操作**：从其他cases中移除该消息，仅保留在最佳case中
+
+##### 实时Action Logging
+* 记录每个修复动作：添加missing message、移除duplicate assignment
+* 显示case summary预览和置信度信息
+* 提供修复前后的统计对比
+
+### 3.2 生成Tail Summary
+
+#### 3.2.1 Tail Summary的目的和结构
+
+* **目的**：为下一个chunk提供结构化的上文信息，确保case连续性
+* **输入**：当前chunk的case segmentation结果 + 当前消息 + overlap参数
+
+* **结构**：
+  ```
+  ACTIVE_CASE_HINTS:
+  - topic: "简短标题"
+    status: "open|ongoing|blocked"
+    evidence_msg_ch_idx: [消息索引列表]
+
+  RECENT_MESSAGES:
+  - msg_ch_idx | sender id=sender_id | role=role | timestamp | text=截断文本
+
+  META (optional):
+  - overlap: 数值
+  - channel: 完整channel_url
+  - time_window: ["开始时间", "结束时间"]
+  ```
+
+* **Active Case提取**：从complete_cases中提取未解决的cases（status为open/ongoing/blocked）
+* **Recent Messages**：取当前chunk尾部最多overlap条消息，文本截断150字符
+* **时间窗口**：当前chunk的开始和结束时间戳
+
+4. **LLM集成与调用**
+
+### 4.1 LLM API配置
+
+* **API提供商**：Anthropic Claude API
+* **默认模型**：`claude-3-5-sonnet-20241022`（可通过`--model/-m`参数指定）
+* **API密钥**：通过环境变量`ANTHROPIC_API_KEY`或`--api-key`参数提供
+* **最大tokens**：默认4000（case segmentation和tail summary调用）
+
+### 4.2 调用方式
+
+* **Case Segmentation**：`llm_client.generate(final_prompt, call_label="case_segmentation")`
+* **Tail Summary**：`llm_client.generate(final_prompt, call_label="tail_summary")`
+* **调用标签**：用于debug日志文件命名和追踪
+
+### 4.3 Debug日志系统
+
+* **日志目录**：`debug_output/`（自动创建）
+* **文件命名**：`{call_label}_{timestamp}.log`
+* **日志内容**：
+  * 请求元数据（时间戳、call_label、模型、max_tokens、prompt长度）
+  * 完整prompt内容
+  * 完整response内容或错误信息
+  * 成功/失败状态
+
+### 4.4 JSON解析
+
+* **正常路径**：直接 `json.loads(response)`
+* **容错路径**：使用正则表达式 `re.search(r'\{.*\}', response, re.DOTALL)` 提取JSON
+* **失败处理**：抛出RuntimeError并记录到debug日志
+
+5. **JSON输出格式与Hard Constraints**
+
+### 5.1 完整JSON输出结构
+
+每个chunk的case segmentation返回严格的JSON格式：
+
+```json
+{
+  "complete_cases": [
     {
-      "complete_cases": [
-        {
-          "msg_list": [0,1,2,5],
-          "summary": "Brief description …",
-          "confidence": 0.9
-        }
-      ],
-      "total_messages_analyzed": <total_number_of_messages>
+      "msg_list": [0,1,2,5],
+      "summary": "Brief description of the issue, actions taken, and resolution status. Include: orders, buyer, topic, key actions, status, last_update (ISO), pending_party.",
+      "status": "open | ongoing | resolved | blocked",
+      "pending_party": "seller | platform | N/A", 
+      "last_update": "YYYY-MM-DDTHH:MM:SSZ or N/A",
+      "is_active_case": true,
+      "confidence": 0.9
     }
-    ```
-  * 明确跨块要**延续未完结的 case**，新问题才新建 case。
+  ],
+  "total_messages_analyzed": <int>
+}
+```
 
-6. **调用 LLM（两种方式其一）**
+### 5.2 字段说明
 
-* **Responses API**（推荐，`--use_responses_api` 开启）：强制 `response_format={"type":"json_object"}` 以获得稳定 JSON。
-* **Chat Completions**：同样强制 JSON 输出。
-* 模型名由 `--model` 指定（默认 `"gpt-4.1-mini"`）。
+* **msg_list**：该case包含的消息索引列表（基于msg_ch_idx，升序排列，无重复）
+* **summary**：1-3句英文描述，必须包含：orders、buyer、topic、key actions、status、last_update、pending_party
+* **status**：案例状态（open=新开启、ongoing=进行中、resolved=已解决、blocked=阻塞）
+* **pending_party**：待处理方（seller=卖家、platform=平台、N/A=无需等待）
+* **last_update**：最后更新时间（ISO格式或N/A）
+* **is_active_case**：是否为活跃案例（status为open/ongoing/blocked时为true）
+* **confidence**：置信度（0-1之间的浮点数）
+* **total_messages_analyzed**：当前chunk分析的消息总数
 
-7. **解析 JSON**
+### 5.3 Hard Constraints系统
 
-* 正常路径：直接 `json.loads`。
-* 容错路径：若返回混入非 JSON 文本，使用正则抓取首个 `{...}` 再 `json.loads`；解析失败则抛错。
+#### Coverage & Uniqueness Check硬约束
+* 每个`msg_ch_idx`必须被分配到至多一个case中
+* 如果消息涉及多个实体，使用锚点优先级选择一个case
+* 最终JSON必须达到0重复、0遗漏的msg_ch_idx分配
 
-8. **块内 case→全局 case 映射（跨块合并的核心）**
+#### Report & Fix Loop机制  
+* 在推理过程中检测到重复或未分配消息时，必须在输出JSON前修复
+* 最终JSON必须通过100%覆盖验证
+* 失败时触发pipeline中断和错误处理
 
-* 维护一张**全局映射表**：`message_index -> global_case_id` 和 `next_case_id` 计数器。
-* 对当前块返回的每个 case：
+9. **当前实现状态**
 
-  * 查看其 `msg_list` 是否**与已有消息**（上一块及更早块）有重叠：
+### 9.1 已实现功能（Stage 1-2, 4-5）
 
-    * **有重叠**：采用**先占先得**原则，已分配的 `message_index` 不可覆盖。若新 case 包含已分配消息：
-      - 将 `msg_list` 拆分为**已分配部分**和**未分配部分**
-      - 已分配部分保持原归属，未分配部分可新建 case 或合并到其他 case
-      - 若未分配部分太少（< 2条消息），则丢弃该 case
-    * **无重叠**：分配新 `global_case_id = next_case_id`，并自增计数器。
-  * **仅将未分配的** `message_index` 写入映射表（建立**全局归属**），避免覆盖冲突。
-  * 同时把该 case（附 `global_case_id/summary/confidence`）保存到中间结果里。
+* **Stage 1-2**：完整的文件处理和分块系统
+* **Stage 4**：第一个chunk的case segmentation，包含validation和auto-fix
+* **Stage 5**：第一个chunk的tail summary generation
 
-9. **块间推进**
+### 9.2 输出文件
 
-* 处理完一个块后，移动到下一个块；"上文摘要"由**当前块开始位置之前的消息**生成（避免包含当前块内容）；由于映射表已累积，重叠消息会自然把跨块的相同话题**串起来**。
+* `out/[source_filename]_out.csv`：预处理后的消息数据
+* `out/first_chunk_cases.json`：第一个chunk的case segmentation结果  
+* `out/first_chunk_tail_summary.txt`：第一个chunk的tail summary
+* `debug_output/{call_label}_{timestamp}.log`：LLM调用的debug日志
 
-10. **生成逐行 case 标注**
+### 9.3 待实现功能（多chunk处理）
 
-* 所有块处理结束后，根据 `message_index -> global_case_id` 映射，为原始 CSV 增加一列 `case_id`，输出为：
+* **跨chunk的case mapping**：`message_index -> global_case_id`映射表
+* **全局case聚合**：合并跨chunk的相同cases
+* **完整pipeline**：处理所有chunks并生成最终输出
+  * `out/segmented.csv`：带case_id标注的完整数据
+  * `out/cases.json`：全局聚合的cases列表
 
-  * `out/segmented.csv`
-
-11. **聚合全局 case 列表**
-
-* 将各块的 case（含 `global_case_id`）按全局 ID 聚合：
-
-  * 合并 `msg_list`（去重、排序）。
-  * `summary` 选择**满足“必含字段”要求**且信息量更高者（若多条均满足，取最近时间覆盖的那条；若均不满足，取最长并在后处理阶段补齐缺项）。
-  * `confidence` 取**均值**（四舍五入到三位小数）。
-* **后处理补齐（可选）**：如最终 `summary` 未覆盖 `order/user/status` 等必项，可基于 `msg_list` 对应的消息做轻量提取，将缺失项以 `order: N/A` / `status: open`（启发式）等形式补齐再落盘。
-* 生成最终 JSON：
-
-  * `out/cases.json`（包含 `"complete_cases": [...]`, `"total_messages_analyzed": N`）
-
-12. **参数与默认值**
+10. **参数与默认值**
 
 * `--chunk-size/-c` = 80（按行数分块；若需按 token 可替换为 token 估算）
 * `--overlap/-l` = 20（跨块上下文粘连，必须 < chunk_size/3）
 * `--input/-i` = `assets/support_messages_andy.csv`（输入 CSV 文件）
 * `--output-dir/-o` = `out`（输出目录）
-* `--model` = `"gpt-4.1-mini"`
-* `--use_responses_api`：启用 Responses API 强制 JSON 输出
+* `--model/-m` = `"claude-3-5-sonnet-20241022"`（Claude模型名称）
+* `--api-key`：Anthropic API密钥（可选，默认使用环境变量ANTHROPIC_API_KEY）
 
-13. **健壮性与可扩展点**
+11. **健壮性与可扩展点**
 
-* **JSON 容错**：提供了抓 `{...}` 的兜底解析。
-* **列名容错**：自动猜测并允许显式覆盖。
-* **跨块冲突处理**：如同一块 case 与多个既有全局 ID 重叠，取**最小 ID** 统一并避免分裂。
-* **关键词/结束判定**：脚本包含 `CLOSURE_KEYWORDS` 与 `detect_closed_case`（当前未强制使用），可扩展用于：
+* **JSON 容错**：提供了正则表达式兜底解析 `re.search(r'\{.*\}', response, re.DOTALL)`
+* **Validation与Auto-Fix**：100%覆盖率保障，自动修复missing和duplicate assignments
+* **Debug日志系统**：完整的LLM调用日志，包含请求/响应内容和错误信息  
+* **Policy-based修复**：
+  * Missing messages：基于邻近度的智能分配
+  * Multi-assignments：基于置信度的优先级选择
+  * 实时Action logging显示所有修复动作
+* **Hard Constraints执行**：
+  * Prompt内置Coverage & Uniqueness Check要求
+  * Report & Fix Loop机制确保JSON输出质量
+  * 失败时pipeline中断，避免传播错误结果
+* **可扩展的分块策略**：当前按行数分块，可扩展为按token数分块
 
-  * 影响“上文摘要”的“活跃 case”判断；
-  * 在 merge 阶段辅助判定是否应延续或关闭。
-* **可替换的分块策略**：目前按行数分块；可改为按 token（集成 `tiktoken`）更稳。
+12. **复杂度与性能**
 
-14. **复杂度与性能**
-
-* 线性遍历消息（`O(N)`），合并依赖哈希映射；LLM 调用成本取决于**块数 × Prompt 长度**。
-* 通过重叠与上文摘要，尽量减少误切与跨块断裂，兼顾成本与准确度。
+* **时间复杂度**：线性遍历消息（`O(N)`），validation和auto-fix为`O(Cases × Messages)`
+* **空间复杂度**：每个chunk的DataFrame slice + case结果存储
+* **LLM调用成本**：每chunk需要2次调用（case segmentation + tail summary）
+* **Debug开销**：每次LLM调用生成完整日志文件，文件大小取决于prompt和response长度
+* **优化策略**：
+  * 重叠机制减少误切断裂
+  * Hard constraints减少重复修正成本  
+  * Policy-based auto-fix避免人工干预
 
 ---
 
