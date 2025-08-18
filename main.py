@@ -141,111 +141,6 @@ class TailSummaryResponse(BaseModel):
 # Repair Chunk Output Utilities
 # ----------------------------
 
-REQUIRED_FIELDS_DEFAULTS = {
-    "summary": "N/A",
-    "status": "ongoing",            # 缺省设为 ongoing，便于保守承接
-    "pending_party": "N/A",
-    "last_update": "N/A",
-    "is_active_case": False,
-    "confidence": 0.0,
-    "anchors": {}
-}
-
-ANCHOR_KEYS_STRICT = ("tracking", "order", "buyer", "topic")
-ANCHOR_KEYS_LAX   = ("tracking", "order", "order_ids", "buyer", "buyers", "topic")
-
-def _ensure_case_schema(c: Dict[str, Any]) -> Dict[str, Any]:
-    """补齐字段、规范类型，不改入参（在外层会 deepcopy）"""
-    if "msg_list" not in c or not isinstance(c["msg_list"], list):
-        c["msg_list"] = []
-    # 统一整型 + 升序去重
-    c["msg_list"] = sorted({int(x) for x in c["msg_list"]})
-
-    for k, v in REQUIRED_FIELDS_DEFAULTS.items():
-        c.setdefault(k, copy.deepcopy(v))
-
-    # 规范 anchors
-    if not isinstance(c["anchors"], dict):
-        c["anchors"] = {}
-    for k in ANCHOR_KEYS_LAX:
-        v = c["anchors"].get(k)
-        if v is None:
-            continue
-        # 统一为 list[str]
-        if isinstance(v, (str, int)):
-            c["anchors"][k] = [str(v)]
-        elif isinstance(v, list):
-            c["anchors"][k] = [str(x) for x in v if x is not None]
-        else:
-            c["anchors"][k] = [str(v)]
-
-    # 规范 last_update（容错 ISO，不可解析则保留原值）
-    lu = c.get("last_update", "N/A")
-    if isinstance(lu, str) and lu not in ("", "N/A"):
-        try:
-            # 尝试解析；再统一成 ISO 格式
-            dt = datetime.fromisoformat(lu.replace("Z", "+00:00"))
-            c["last_update"] = dt.isoformat().replace("+00:00","Z")
-        except Exception:
-            pass
-
-    # 置信度裁剪
-    try:
-        c["confidence"] = float(c.get("confidence", 0.0))
-    except Exception:
-        c["confidence"] = 0.0
-    c["confidence"] = max(0.0, min(1.0, c["confidence"]))
-
-    # 状态合法性
-    if c.get("status") not in ("open", "ongoing", "resolved", "blocked"):
-        c["status"] = "ongoing"
-
-    # is_active_case 合法性
-    c["is_active_case"] = bool(c.get("is_active_case", False))
-    return c
-
-def _anchor_strength(case: Dict[str, Any]) -> int:
-    # tracking(4) > order(3) > buyer(2) > topic(1)
-    anc = case.get("anchors", {})
-    if anc.get("tracking"): return 4
-    if anc.get("order") or anc.get("order_ids"): return 3
-    if anc.get("buyer") or anc.get("buyers"): return 2
-    if anc.get("topic"): return 1
-    return 0
-
-def _hits_active_hints(case: Dict[str, Any], prev_context: Optional[Dict[str, Any]]) -> bool:
-    if not prev_context: return False
-    hints = prev_context.get("ACTIVE_CASE_HINTS", [])
-    if not hints: return False
-    anc = case.get("anchors", {})
-    for h in hints:
-        for k in ANCHOR_KEYS_LAX:
-            if set(anc.get(k, [])) & set(h.get(k, [])):
-                return True
-    return False
-
-def _proximity_score(i: int, case: Dict[str, Any]) -> float:
-    ml = case.get("msg_list", [])
-    if not ml: return 0.0
-    dist = min(abs(i - m) for m in ml)
-    return 1.0 / (1 + dist)  # 1, 0.5, 0.33, ...
-
-def _choose_one_for_duplicate(i: int, cases: List[Dict[str, Any]], cids: List[int], prev_context: Optional[Dict[str, Any]]) -> int:
-    # 规则：anchor_strength > 承接(prev_context) > confidence > proximity > 较小 case_id（稳定）
-    scored = []
-    for cid in cids:
-        c = cases[cid]
-        scored.append((
-            _anchor_strength(c),
-            1 if _hits_active_hints(c, prev_context) else 0,
-            float(c.get("confidence", 0.0)),
-            _proximity_score(i, c),
-            -cid,  # 反向用于最后的稳定 tie-break（越小优先）
-            cid
-        ))
-    scored.sort(reverse=True)
-    return scored[0][-1]
-
 
 # ----------------------------
 # Merge Overlap Utilities
@@ -279,237 +174,7 @@ class UnionFind:
             self.parent[rb] = ra
 
 
-def _score_merge_candidate(msg_idx: int, case: Dict[str, Any], chunk_idx: int, prev_context: Optional[Dict[str, Any]]) -> float:
-    """计算merge候选case的评分"""
-    s = 0.0
-    s += 0.40 * (1.0 if _hits_active_hints(case, prev_context) else 0.0)                    # 承接
-    s += 0.25 * (_anchor_strength(case) / 4.0)                                             # 锚点强度
-    s += 0.20 * float(max(0.0, min(1.0, case.get("confidence", 0.0))))                    # 置信度
-    s += 0.10 * _proximity_score(msg_idx, case)                                            # 贴近度
-    s += 0.05 * (1.0 if chunk_idx == 1 else 0.0)                                          # 后块偏置
-    return s
 
-
-def _anchor_equivalent(c1: Dict[str, Any], c2: Dict[str, Any]) -> bool:
-    """检查两个case的锚点等价性"""
-    a1, a2 = c1.get("anchors", {}), c2.get("anchors", {})
-    
-    # tracking级别等价
-    if set(a1.get("tracking", [])) & set(a2.get("tracking", [])):
-        return True
-    
-    # order级别等价  
-    orders1 = set(a1.get("order", []) + a1.get("order_ids", []))
-    orders2 = set(a2.get("order", []) + a2.get("order_ids", []))
-    if orders1 & orders2:
-        return True
-    
-    return False
-
-
-def merge_overlap(
-    cases_k: List[Dict[str, Any]],
-    cases_k1: List[Dict[str, Any]],
-    prev_context: Optional[Dict[str, Any]],
-    overlap_ids: Set[int],
-    review_gap_threshold: float = 0.05
-) -> Dict[str, Any]:
-    """
-    对 chunk k 与 k+1 的 overlap 部分进行冲突裁决、去重、并案。
-    
-    Args:
-        cases_k: chunk k的cases
-        cases_k1: chunk k+1的cases
-        prev_context: 前序上下文（tail summary）
-        overlap_ids: 重叠的消息ID集合
-        review_gap_threshold: 需要复核的评分差距阈值
-    
-    Returns:
-        {
-          "owner": { msg_idx: {"chosen": CaseRef, "candidates": [CaseRef...], "scores": {CaseRef: score}}},
-          "cases_k_out": [...],    # 深拷贝后、已做剔除
-          "cases_k1_out": [...],
-          "uf_parent": { uf_key: root_key, ... },
-          "conflicts": [ {msg_idx, chosen:CaseRef, alt:CaseRef, score_gap, reason}, ... ],
-          "errors": [ ... ]        # 非致命问题
-        }
-    """
-    # 深拷贝，避免副作用
-    cases0 = copy.deepcopy(cases_k)
-    cases1 = copy.deepcopy(cases_k1)
-
-    uf = UnionFind()
-    owner: Dict[int, Dict[str, Any]] = {}
-    conflicts: List[Dict[str, Any]] = []
-    errors: List[str] = []
-    pending_removals = defaultdict(list)  # (chunk_idx, case_id) -> [msg_idx,...]
-
-    for i in sorted(overlap_ids):
-        candidates: List[Tuple[CaseRef, Dict[str, Any], float]] = []
-        
-        # 收集chunk k的候选
-        for cid, c in enumerate(cases0):
-            if i in c.get("msg_list", []):
-                ref = CaseRef(0, cid)
-                score = _score_merge_candidate(i, c, 0, prev_context)
-                candidates.append((ref, c, score))
-        
-        # 收集chunk k+1的候选
-        for cid, c in enumerate(cases1):
-            if i in c.get("msg_list", []):
-                ref = CaseRef(1, cid)
-                score = _score_merge_candidate(i, c, 1, prev_context)
-                candidates.append((ref, c, score))
-
-        # 统一 owner 结构（即使 0 或 1 候选）
-        owner[i] = {"chosen": None, "candidates": [c[0] for c in candidates], "scores": {}}
-        for ref, _, sc in candidates:
-            owner[i]["scores"][ref] = sc
-
-        if len(candidates) == 0:
-            # 无人认领：留给未分配处理器
-            continue
-
-        # 按分数排序
-        candidates.sort(key=lambda x: x[2], reverse=True)
-        chosen_ref, chosen_case, best_score = candidates[0]
-
-        # 完全平分时的细化 tie-break：锚点强度 > 后块偏置 > (chunk, case_id)
-        if len(candidates) > 1 and abs(best_score - candidates[1][2]) < 1e-12:
-            def tie_key(t):
-                ref, case, _ = t
-                return (
-                    _anchor_strength(case),
-                    1 if ref.chunk_idx == 1 else 0,
-                    ref.chunk_idx,
-                    ref.case_id
-                )
-            candidates.sort(key=tie_key, reverse=True)
-            chosen_ref, chosen_case, best_score = candidates[0]
-
-        owner[i]["chosen"] = chosen_ref
-
-        # 标记需要从其他候选中移除该 msg（稍后统一应用）
-        for ref, case, sc in candidates[1:]:
-            pending_removals[(ref.chunk_idx, ref.case_id)].append(i)
-
-        # 并案：若锚点等价，Union 成同一全局案
-        for ref, case, sc in candidates[1:]:
-            if _anchor_equivalent(chosen_case, case):
-                uf.union(chosen_ref.uf_key(), ref.uf_key())
-
-        # 进入复核队列：分差接近
-        if len(candidates) > 1 and (best_score - candidates[1][2]) < review_gap_threshold:
-            conflicts.append({
-                "msg_idx": i,
-                "chosen": chosen_ref,
-                "alt": candidates[1][0],
-                "score_gap": round(best_score - candidates[1][2], 4),
-                "reason": "small score gap in overlap"
-            })
-
-    # 应用剔除（统一修改，避免副作用/读写竞态）
-    for (ck, cid), to_remove in pending_removals.items():
-        target_cases = cases0 if ck == 0 else cases1
-        if 0 <= cid < len(target_cases):
-            ml = target_cases[cid].get("msg_list", [])
-            keep = sorted(set(ml) - set(to_remove))
-            target_cases[cid]["msg_list"] = keep
-        else:
-            errors.append(f"invalid case index to remove: chunk={ck}, case={cid}")
-
-    return {
-        "owner": owner,
-        "cases_k_out": cases0,
-        "cases_k1_out": cases1,
-        "uf_parent": uf.parent,
-        "conflicts": conflicts,
-        "errors": errors
-    }
-
-
-def build_global_mapping(
-    pairwise_uf_parents: List[Dict[str, str]],
-    chunk_cases_list: List[List[Dict[str, Any]]]
-) -> Tuple[Dict[str, str], Dict[str, int]]:
-    """
-    把多个 pairwise merge 的 uf_parent 合并为一个全局 UF 映射。
-    返回：
-      - uf_parent_merged: 最终 UF 的 parent 映射
-      - local_to_global_id: "{chunk_idx}#{case_id}" -> global_case_id (int)
-    """
-    uf = UnionFind()
-    # 先将所有局部 case 注册
-    for chunk_idx, cases in enumerate(chunk_cases_list):
-        for cid, _ in enumerate(cases):
-            uf.find(f"{chunk_idx}#{cid}")
-
-    # 合并所有 pairwise union 结果
-    for parent_map in pairwise_uf_parents:
-        for node, parent in parent_map.items():
-            uf.union(node, parent)
-
-    # 归并到连续的全局 id
-    root_to_gid: Dict[str, int] = {}
-    local_to_global: Dict[str, int] = {}
-    gid = 0
-    for chunk_idx, cases in enumerate(chunk_cases_list):
-        for cid, _ in enumerate(cases):
-            key = f"{chunk_idx}#{cid}"
-            root = uf.find(key)
-            if root not in root_to_gid:
-                root_to_gid[root] = gid
-                gid += 1
-            local_to_global[key] = root_to_gid[root]
-
-    return uf.parent, local_to_global
-
-
-def aggregate_global_cases(
-    chunk_cases_list: List[List[Dict[str, Any]]],
-    local_to_global: Dict[str, int]
-) -> List[Dict[str, Any]]:
-    """
-    把 (chunk, case) 聚合为全局 case：
-    - msg_list 合并去重升序
-    - 状态/最后时间/是否 active：取"更晚/更强"的（可按需自定义）
-    - summary：简单策略为拼接最近版本或保留信息量较大的（此处取最后出现的）
-    """
-    global_buckets: Dict[int, List[Tuple[int, int]]] = defaultdict(list)  # gid -> [(chunk_idx, case_id)]
-    for chunk_idx, cases in enumerate(chunk_cases_list):
-        for cid, _ in enumerate(cases):
-            key = f"{chunk_idx}#{cid}"
-            gid = local_to_global[key]
-            global_buckets[gid].append((chunk_idx, cid))
-
-    globals_out: List[Dict[str, Any]] = []
-    for gid, refs in sorted(global_buckets.items(), key=lambda x: x[0]):
-        all_msgs: Set[int] = set()
-        last_case: Optional[Dict[str, Any]] = None
-
-        # 简单的"最后写优先"
-        for chunk_idx, cid in sorted(refs):
-            c = chunk_cases_list[chunk_idx][cid]
-            all_msgs.update(c.get("msg_list", []))
-            last_case = c
-
-        if last_case is None:
-            continue
-
-        # 你可以在此自定义更复杂的汇总策略
-        globals_out.append({
-            "global_case_id": gid,
-            "msg_list": sorted(all_msgs),
-            "summary": last_case.get("summary", "N/A"),
-            "status": last_case.get("status", "N/A"),
-            "pending_party": last_case.get("pending_party", "N/A"),
-            "last_update": last_case.get("last_update", "N/A"),
-            "is_active_case": bool(last_case.get("is_active_case", False)),
-            "confidence": float(last_case.get("confidence", 0.0)),
-            "anchors": last_case.get("anchors", {})
-        })
-
-    return globals_out
 
 
 def validate_global_assignment(
@@ -808,7 +473,7 @@ class Chunk:
                 
         except Exception as e:
             raise RuntimeError(f"Failed to generate tail summary for chunk {self.chunk_id}: {e}")
-    
+
     def generate_case_segments(self, 
                              current_chunk_messages: str, 
                              previous_chunk_tail_summary: Optional[str], 
@@ -884,9 +549,7 @@ class Chunk:
             
         except Exception as e:
             raise RuntimeError(f"Failed to generate case segments for chunk {self.chunk_id}: {e}")
-    
-    
-    
+
     def repair_case_segment_output(self, 
                                  cases: List[Dict[str, Any]], 
                                  prev_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -956,9 +619,9 @@ class Chunk:
                 if not c.get("is_active_case", False) and c.get("status") == "resolved":
                     continue
                 scored.append((
-                    1 if _hits_active_hints(c, prev_context) else 0,
-                    _anchor_strength(c),
-                    _proximity_score(msg_idx, c),
+                    1 if self._hits_active_hints(c, prev_context) else 0,
+                    self._anchor_strength(c),
+                    self._proximity_score(msg_idx, c),
                     float(c.get("confidence", 0.0)),
                     -cid,
                     cid
@@ -1010,7 +673,7 @@ class Chunk:
 
         # 1) 规范化 & 补齐字段
         for idx in range(len(out)):
-            out[idx] = _ensure_case_schema(out[idx])
+            out[idx] = self._ensure_case_schema(out[idx])
 
         # 2) case 内排序稳定 + 去空 case
         out = [c for c in out if c["msg_list"]]
@@ -1028,7 +691,7 @@ class Chunk:
         for i, cids in list(msg_to_cases.items()):
             if len(cids) <= 1:
                 continue
-            winner = _choose_one_for_duplicate(i, out, cids, prev_context)
+            winner = self._choose_one_for_duplicate(i, out, cids, prev_context)
             losers = [cid for cid in cids if cid != winner]
             # 从 loser 中移除该 msg
             for cid in losers:
@@ -1109,7 +772,116 @@ class Chunk:
             "provisionals": provisionals,
             "report": report
         }
+    
+    # =========================
+    # Helper methods for case processing
+    # =========================
+    
+    def _ensure_case_schema(self, c: Dict[str, Any]) -> Dict[str, Any]:
+        """补齐字段、规范类型，不改入参（在外层会 deepcopy）"""
+        # Import from ChannelSegmenter constants
+        REQUIRED_FIELDS_DEFAULTS = {
+            "summary": "N/A",
+            "status": "ongoing",
+            "pending_party": "N/A",
+            "last_update": "N/A",
+            "is_active_case": False,
+            "confidence": 0.0,
+            "anchors": {}
+        }
+        ANCHOR_KEYS_LAX = ("tracking", "order", "order_ids", "buyer", "buyers", "topic")
+        
+        if "msg_list" not in c or not isinstance(c["msg_list"], list):
+            c["msg_list"] = []
+        # 统一整型 + 升序去重
+        c["msg_list"] = sorted({int(x) for x in c["msg_list"]})
 
+        for k, v in REQUIRED_FIELDS_DEFAULTS.items():
+            c.setdefault(k, copy.deepcopy(v))
+
+        # 规范 anchors
+        if not isinstance(c["anchors"], dict):
+            c["anchors"] = {}
+        for k in ANCHOR_KEYS_LAX:
+            v = c["anchors"].get(k)
+            if v is None:
+                continue
+            # 统一为 list[str]
+            if isinstance(v, (str, int)):
+                c["anchors"][k] = [str(v)]
+            elif isinstance(v, list):
+                c["anchors"][k] = [str(x) for x in v if x is not None]
+            else:
+                c["anchors"][k] = [str(v)]
+
+        # 规范 last_update（容错 ISO，不可解析则保留原值）
+        lu = c.get("last_update", "N/A")
+        if isinstance(lu, str) and lu not in ("", "N/A"):
+            try:
+                # 尝试解析；再统一成 ISO 格式
+                dt = datetime.fromisoformat(lu.replace("Z", "+00:00"))
+                c["last_update"] = dt.isoformat().replace("+00:00","Z")
+            except Exception:
+                pass
+
+        # 置信度裁剪
+        try:
+            c["confidence"] = float(c.get("confidence", 0.0))
+        except Exception:
+            c["confidence"] = 0.0
+        c["confidence"] = max(0.0, min(1.0, c["confidence"]))
+
+        # 状态合法性
+        if c.get("status") not in ("open", "ongoing", "resolved", "blocked"):
+            c["status"] = "ongoing"
+
+        # is_active_case 合法性
+        c["is_active_case"] = bool(c.get("is_active_case", False))
+        return c
+    
+    def _anchor_strength(self, case: Dict[str, Any]) -> int:
+        # tracking(4) > order(3) > buyer(2) > topic(1)
+        anc = case.get("anchors", {})
+        if anc.get("tracking"): return 4
+        if anc.get("order") or anc.get("order_ids"): return 3
+        if anc.get("buyer") or anc.get("buyers"): return 2
+        if anc.get("topic"): return 1
+        return 0
+
+    def _hits_active_hints(self, case: Dict[str, Any], prev_context: Optional[Dict[str, Any]]) -> bool:
+        if not prev_context: return False
+        hints = prev_context.get("ACTIVE_CASE_HINTS", [])
+        if not hints: return False
+        anc = case.get("anchors", {})
+        # Use class constant from ChannelSegmenter 
+        ANCHOR_KEYS_LAX = ("tracking", "order", "order_ids", "buyer", "buyers", "topic")
+        for h in hints:
+            for k in ANCHOR_KEYS_LAX:
+                if set(anc.get(k, [])) & set(h.get(k, [])):
+                    return True
+        return False
+
+    def _proximity_score(self, i: int, case: Dict[str, Any]) -> float:
+        ml = case.get("msg_list", [])
+        if not ml: return 0.0
+        dist = min(abs(i - m) for m in ml)
+        return 1.0 / (1 + dist)  # 1, 0.5, 0.33, ...
+
+    def _choose_one_for_duplicate(self, i: int, cases: List[Dict[str, Any]], cids: List[int], prev_context: Optional[Dict[str, Any]]) -> int:
+        # 规则：anchor_strength > 承接(prev_context) > confidence > proximity > 较小 case_id（稳定）
+        scored = []
+        for cid in cids:
+            c = cases[cid]
+            scored.append((
+                self._anchor_strength(c),
+                1 if self._hits_active_hints(c, prev_context) else 0,
+                float(c.get("confidence", 0.0)),
+                self._proximity_score(i, c),
+                -cid,  # 反向用于最后的稳定 tie-break（越小优先）
+                cid
+            ))
+        scored.sort(reverse=True)
+        return scored[0][-1]
 
 
 class LLMClient:
@@ -1414,12 +1186,12 @@ class FileProcessor:
         print(f"Saved processed data to {output_path}")
         return output_path
     
-    def process(self) -> Optional[pd.DataFrame]:
-        """Execute the complete processing pipeline"""
+    def process(self) -> List[Dict[str, Any]]:
+        """Execute the complete processing pipeline and return list of channel data"""
         print("Starting file processing...")
         
         if not self.load_data():
-            return None
+            return []
             
         # Execute processing pipeline
         self.add_role_column()
@@ -1434,24 +1206,54 @@ class FileProcessor:
         print(f"Processing complete! Output saved to {output_path}")
         print(f"Processed {len(self.df_clean)} messages across {self.df_clean['Channel URL'].nunique()} channels")
         
-        return self.df_clean
+        # Group by channel and create list of channel data
+        channel_data_list = []
+        for channel_url in self.df_clean['Channel URL'].unique():
+            channel_df = self.df_clean[self.df_clean['Channel URL'] == channel_url].copy()
+            # Reset msg_ch_idx to ensure it starts from 0 for each channel
+            channel_df['msg_ch_idx'] = range(len(channel_df))
+            
+            channel_data_list.append({
+                "channel_url": channel_url,
+                "dataframe": channel_df
+            })
+            
+            print(f"  Channel: {channel_url[:50]}... - {len(channel_df)} messages")
+        
+        return channel_data_list
 
 
 class ChannelSegmenter:
     """
     Segments processed messages into overlapping chunks for LLM analysis.
+    Assumes single channel input.
     
     Features:
-    - Channel separation: Each channel is processed independently
     - Half-open intervals: Uses [start, end) to avoid boundary duplication
     - Overlap validation: Ensures overlap < chunk_size/3 for optimal coverage
     - Chunk tracking: Maintains overlap metadata for context continuity
+    - Case merging: Handles pairwise merge and global aggregation
     """
     
-    def __init__(self, df_clean: pd.DataFrame, chunk_size: int = 80, overlap: int = 20):
+    # Case schema and anchor constants
+    REQUIRED_FIELDS_DEFAULTS = {
+        "summary": "N/A",
+        "status": "ongoing",            # 缺省设为 ongoing，便于保守承接
+        "pending_party": "N/A",
+        "last_update": "N/A",
+        "is_active_case": False,
+        "confidence": 0.0,
+        "anchors": {}
+    }
+    
+    ANCHOR_KEYS_STRICT = ("tracking", "order", "buyer", "topic")
+    ANCHOR_KEYS_LAX = ("tracking", "order", "order_ids", "buyer", "buyers", "topic")
+    
+    def __init__(self, df_clean: pd.DataFrame, chunk_size: int = 80, overlap: int = 20, review_gap_threshold: float = 0.05):
         self.df_clean = df_clean
         self.chunk_size = chunk_size
         self.overlap = overlap
+        self.review_gap_threshold = review_gap_threshold
         self.chunks: List[Chunk] = []
         
         self.validate_parameters()
@@ -1468,20 +1270,17 @@ class ChannelSegmenter:
             raise ValueError("overlap cannot be negative")
     
     def generate_chunks(self) -> List[Chunk]:
-        """Generate chunks for all channels"""
+        """Generate chunks for single channel"""
         self.chunks = []
-        chunk_id_counter = 0
         
-        # Process each channel separately
-        for channel_url in self.df_clean['Channel URL'].unique():
-            channel_df = self.df_clean[self.df_clean['Channel URL'] == channel_url].copy()
-            
-            # Generate chunks for this channel
-            channel_chunks = self.get_channel_chunks(channel_df, channel_url, chunk_id_counter)
-            self.chunks.extend(channel_chunks)
-            chunk_id_counter += len(channel_chunks)
+        # Assume single channel input - get the channel URL
+        channel_url = self.df_clean['Channel URL'].iloc[0] if len(self.df_clean) > 0 else "unknown"
         
-        print(f"Generated {len(self.chunks)} chunks across {self.df_clean['Channel URL'].nunique()} channels")
+        # Generate chunks for this channel
+        channel_chunks = self.get_channel_chunks(self.df_clean, channel_url, 0)
+        self.chunks.extend(channel_chunks)
+        
+        print(f"Generated {len(self.chunks)} chunks for single channel")
         return self.chunks
     
     def get_channel_chunks(self, channel_df: pd.DataFrame, channel_url: str, start_chunk_id: int) -> List[Chunk]:
@@ -1551,30 +1350,8 @@ class ChannelSegmenter:
         if not self.chunks:
             return {"global_cases": [], "local_to_global": {}, "total_messages": 0}
         
-        # 按channel分组处理
-        channel_groups = {}
-        for chunk in self.chunks:
-            if chunk.channel_url not in channel_groups:
-                channel_groups[chunk.channel_url] = []
-            channel_groups[chunk.channel_url].append(chunk)
+        chunks = self.chunks
         
-        all_channel_results = []
-        
-        for channel_url, channel_chunks in channel_groups.items():
-            print(f"\n--- Processing channel: {channel_url[:50]}... ---")
-            channel_result = self._process_channel_chunks(channel_chunks, llm_client)
-            all_channel_results.append(channel_result)
-        
-        # 如果只有一个channel，直接返回结果
-        if len(all_channel_results) == 1:
-            return all_channel_results[0]
-        
-        # 多个channel需要进一步聚合（可以扩展）
-        print(f"\n=== Aggregating results from {len(all_channel_results)} channels ===")
-        return self._aggregate_channel_results(all_channel_results)
-    
-    def _process_channel_chunks(self, chunks: List[Chunk], llm_client: 'LLMClient') -> Dict[str, Any]:
-        """处理单个channel的所有chunks"""
         if len(chunks) == 1:
             # 单chunk情况
             chunk = chunks[0]
@@ -1594,10 +1371,10 @@ class ChannelSegmenter:
                 "chunks_processed": 1
             }
         
-        # 多chunk情况 - 执行merge pipeline
+        # 多chunk情况 - 分两阶段处理
         print(f"Multi-chunk processing: {len(chunks)} chunks")
         
-        # Stage 1: 处理每个chunk获取case segmentation
+        # Stage 1: LLM调用阶段 - 处理每个chunk获取case segmentation和tail summary
         chunk_cases = []
         tail_summaries = []
         
@@ -1625,6 +1402,28 @@ class ChannelSegmenter:
                 )
                 tail_summaries.append(tail_summary)
         
+        # Stage 2: 数据处理阶段 - 执行merge pipeline
+        return self.execute_merge_pipeline(chunk_cases, tail_summaries, chunks)
+    
+    def execute_merge_pipeline(
+        self,
+        chunk_cases: List[List[Dict[str, Any]]],
+        tail_summaries: List[Dict[str, Any]],
+        chunks: List[Chunk]
+    ) -> Dict[str, Any]:
+        """
+        执行merge pipeline的数据处理阶段（不包含LLM调用）
+        
+        Args:
+            chunk_cases: 每个chunk的case分割结果
+            tail_summaries: 每个chunk的tail summary
+            chunks: chunk列表
+            
+        Returns:
+            包含global_cases, validation_report等的处理结果
+        """
+        print(f"Executing merge pipeline for {len(chunks)} chunks")
+        
         # Stage 2: 执行pairwise merge
         uf_parents = []
         merged_cases = chunk_cases.copy()
@@ -1647,7 +1446,7 @@ class ChannelSegmenter:
                 if isinstance(tail_data, dict) and "active_case_hints" in tail_data:
                     prev_context = {"ACTIVE_CASE_HINTS": tail_data["active_case_hints"]}
             
-            merge_result = merge_overlap(
+            merge_result = self.merge_overlap(
                 cases_k=merged_cases[i],
                 cases_k1=merged_cases[i+1],
                 prev_context=prev_context,
@@ -1685,8 +1484,8 @@ class ChannelSegmenter:
             repaired_cases.append(repair_result["cases_out"])
         
         # Stage 4: 全局聚合
-        _, local_to_global = build_global_mapping(uf_parents, repaired_cases)
-        global_cases = aggregate_global_cases(repaired_cases, local_to_global)
+        _, local_to_global = self.build_global_mapping(uf_parents, repaired_cases)
+        global_cases = self.aggregate_global_cases(repaired_cases, local_to_global)
         
         # 计算实际的channel消息总数（去重chunk重叠）
         channel_msg_indices = set()
@@ -1696,7 +1495,7 @@ class ChannelSegmenter:
         
         # Stage 5: 全局验证和修复
         channel_short_name = chunks[0].channel_url[-20:] if chunks else "unknown"
-        validation_report = validate_global_assignment(
+        validation_report = self.validate_global_assignment(
             global_cases, 
             total_unique_messages, 
             channel_short_name
@@ -1705,14 +1504,14 @@ class ChannelSegmenter:
         # 如果验证失败，尝试修复
         if not validation_report["is_valid"]:
             print(f"\n🔧 Attempting to repair assignment issues...")
-            global_cases = repair_global_assignment(
+            global_cases = self.repair_global_assignment(
                 global_cases, 
                 total_unique_messages, 
                 channel_short_name
             )
             
             # 重新验证修复结果
-            final_validation = validate_global_assignment(
+            final_validation = self.validate_global_assignment(
                 global_cases, 
                 total_unique_messages, 
                 f"{channel_short_name}(repaired)"
@@ -1723,7 +1522,7 @@ class ChannelSegmenter:
             else:
                 print(f"⚠️  Repair partially successful, some issues remain")
         
-        print(f"\n✅ Channel processing complete:")
+        print(f"\n✅ Merge pipeline complete:")
         print(f"   {len(chunks)} chunks → {len(global_cases)} global cases")
         print(f"   Channel messages: {total_unique_messages}")
         print(f"   Assignment quality: {'Perfect' if validation_report.get('is_valid', False) else 'Needs attention'}")
@@ -1735,12 +1534,9 @@ class ChannelSegmenter:
             "chunks_processed": len(chunks),
             "validation_report": validation_report
         }
-    
+
     def _get_overlap_ids(self, chunk_k: Chunk, chunk_k1: Chunk) -> Set[int]:
         """计算两个chunk的重叠消息ID"""
-        if chunk_k.channel_url != chunk_k1.channel_url:
-            return set()
-        
         # 获取两个chunk的消息ID集合
         k_ids = set(chunk_k.get_message_indices())
         k1_ids = set(chunk_k1.get_message_indices())
@@ -1751,30 +1547,597 @@ class ChannelSegmenter:
         return overlap
     
     
-    def _aggregate_channel_results(self, channel_results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """聚合多个channel的结果"""
-        all_global_cases = []
-        total_messages = 0
-        total_chunks = 0
+    
+    # =========================
+    # Case Schema and Anchor Utilities
+    # =========================
+    
+    def _ensure_case_schema(self, c: Dict[str, Any]) -> Dict[str, Any]:
+        """补齐字段、规范类型，不改入参（在外层会 deepcopy）"""
+        if "msg_list" not in c or not isinstance(c["msg_list"], list):
+            c["msg_list"] = []
+        # 统一整型 + 升序去重
+        c["msg_list"] = sorted({int(x) for x in c["msg_list"]})
+
+        for k, v in self.REQUIRED_FIELDS_DEFAULTS.items():
+            c.setdefault(k, copy.deepcopy(v))
+
+        # 规范 anchors
+        if not isinstance(c["anchors"], dict):
+            c["anchors"] = {}
+        for k in self.ANCHOR_KEYS_LAX:
+            v = c["anchors"].get(k)
+            if v is None:
+                continue
+            # 统一为 list[str]
+            if isinstance(v, (str, int)):
+                c["anchors"][k] = [str(v)]
+            elif isinstance(v, list):
+                c["anchors"][k] = [str(x) for x in v if x is not None]
+            else:
+                c["anchors"][k] = [str(v)]
+
+        # 规范 last_update（容错 ISO，不可解析则保留原值）
+        lu = c.get("last_update", "N/A")
+        if isinstance(lu, str) and lu not in ("", "N/A"):
+            try:
+                # 尝试解析；再统一成 ISO 格式
+                dt = datetime.fromisoformat(lu.replace("Z", "+00:00"))
+                c["last_update"] = dt.isoformat().replace("+00:00","Z")
+            except Exception:
+                pass
+
+        # 置信度裁剪
+        try:
+            c["confidence"] = float(c.get("confidence", 0.0))
+        except Exception:
+            c["confidence"] = 0.0
+        c["confidence"] = max(0.0, min(1.0, c["confidence"]))
+
+        # 状态合法性
+        if c.get("status") not in ("open", "ongoing", "resolved", "blocked"):
+            c["status"] = "ongoing"
+
+        # is_active_case 合法性
+        c["is_active_case"] = bool(c.get("is_active_case", False))
+        return c
+    
+    def _anchor_strength(self, case: Dict[str, Any]) -> int:
+        # tracking(4) > order(3) > buyer(2) > topic(1)
+        anc = case.get("anchors", {})
+        if anc.get("tracking"): return 4
+        if anc.get("order") or anc.get("order_ids"): return 3
+        if anc.get("buyer") or anc.get("buyers"): return 2
+        if anc.get("topic"): return 1
+        return 0
+
+    def _hits_active_hints(self, case: Dict[str, Any], prev_context: Optional[Dict[str, Any]]) -> bool:
+        if not prev_context: return False
+        hints = prev_context.get("ACTIVE_CASE_HINTS", [])
+        if not hints: return False
+        anc = case.get("anchors", {})
+        for h in hints:
+            for k in self.ANCHOR_KEYS_LAX:
+                if set(anc.get(k, [])) & set(h.get(k, [])):
+                    return True
+        return False
+
+    def _proximity_score(self, i: int, case: Dict[str, Any]) -> float:
+        ml = case.get("msg_list", [])
+        if not ml: return 0.0
+        dist = min(abs(i - m) for m in ml)
+        return 1.0 / (1 + dist)  # 1, 0.5, 0.33, ...
+
+    def _choose_one_for_duplicate(self, i: int, cases: List[Dict[str, Any]], cids: List[int], prev_context: Optional[Dict[str, Any]]) -> int:
+        # 规则：anchor_strength > 承接(prev_context) > confidence > proximity > 较小 case_id（稳定）
+        scored = []
+        for cid in cids:
+            c = cases[cid]
+            scored.append((
+                self._anchor_strength(c),
+                1 if self._hits_active_hints(c, prev_context) else 0,
+                float(c.get("confidence", 0.0)),
+                self._proximity_score(i, c),
+                -cid,  # 反向用于最后的稳定 tie-break（越小优先）
+                cid
+            ))
+        scored.sort(reverse=True)
+        return scored[0][-1]
+    
+    def _score_merge_candidate(self, msg_idx: int, case: Dict[str, Any], chunk_idx: int, prev_context: Optional[Dict[str, Any]]) -> float:
+        """计算merge候选case的评分"""
+        s = 0.0
+        s += 0.40 * (1.0 if self._hits_active_hints(case, prev_context) else 0.0)                    # 承接
+        s += 0.25 * (self._anchor_strength(case) / 4.0)                                             # 锚点强度
+        s += 0.20 * float(max(0.0, min(1.0, case.get("confidence", 0.0))))                    # 置信度
+        s += 0.10 * self._proximity_score(msg_idx, case)                                            # 贴近度
+        s += 0.05 * (1.0 if chunk_idx == 1 else 0.0)                                          # 后块偏置
+        return s
+
+    def _anchor_equivalent(self, c1: Dict[str, Any], c2: Dict[str, Any]) -> bool:
+        """检查两个case的锚点等价性"""
+        a1, a2 = c1.get("anchors", {}), c2.get("anchors", {})
         
-        global_case_id_offset = 0
+        # tracking级别等价
+        if set(a1.get("tracking", [])) & set(a2.get("tracking", [])):
+            return True
         
-        for result in channel_results:
-            # 重新编号global case IDs
-            for case in result["global_cases"]:
-                case["global_case_id"] += global_case_id_offset
-                all_global_cases.append(case)
+        # order级别等价  
+        orders1 = set(a1.get("order", []) + a1.get("order_ids", []))
+        orders2 = set(a2.get("order", []) + a2.get("order_ids", []))
+        if orders1 & orders2:
+            return True
+        
+        return False
+    
+    # =========================
+    # Core Merge Methods
+    # =========================
+    
+    def merge_overlap(
+        self,
+        cases_k: List[Dict[str, Any]],
+        cases_k1: List[Dict[str, Any]],
+        prev_context: Optional[Dict[str, Any]],
+        overlap_ids: Set[int]
+    ) -> Dict[str, Any]:
+        """
+        对 chunk k 与 k+1 的 overlap 部分进行冲突裁决、去重、并案。
+        
+        Args:
+            cases_k: chunk k的cases
+            cases_k1: chunk k+1的cases
+            prev_context: 前序上下文（tail summary）
+            overlap_ids: 重叠的消息ID集合
+        
+        Returns:
+            {
+              "owner": { msg_idx: {"chosen": CaseRef, "candidates": [CaseRef...], "scores": {CaseRef: score}}},
+              "cases_k_out": [...],    # 深拷贝后、已做剔除
+              "cases_k1_out": [...],
+              "uf_parent": { uf_key: root_key, ... },
+              "conflicts": [ {msg_idx, chosen:CaseRef, alt:CaseRef, score_gap, reason}, ... ],
+              "errors": [ ... ]        # 非致命问题
+            }
+        """
+        # 深拷贝，避免副作用
+        cases0 = copy.deepcopy(cases_k)
+        cases1 = copy.deepcopy(cases_k1)
+
+        uf = UnionFind()
+        owner: Dict[int, Dict[str, Any]] = {}
+        conflicts: List[Dict[str, Any]] = []
+        errors: List[str] = []
+        pending_removals = defaultdict(list)  # (chunk_idx, case_id) -> [msg_idx,...]
+
+        for i in sorted(overlap_ids):
+            candidates: List[Tuple[CaseRef, Dict[str, Any], float]] = []
             
-            global_case_id_offset += len(result["global_cases"])
-            total_messages += result["total_messages"]
-            total_chunks += result["chunks_processed"]
-        
+            # 收集chunk k的候选
+            for cid, c in enumerate(cases0):
+                if i in c.get("msg_list", []):
+                    ref = CaseRef(0, cid)
+                    score = self._score_merge_candidate(i, c, 0, prev_context)
+                    candidates.append((ref, c, score))
+            
+            # 收集chunk k+1的候选
+            for cid, c in enumerate(cases1):
+                if i in c.get("msg_list", []):
+                    ref = CaseRef(1, cid)
+                    score = self._score_merge_candidate(i, c, 1, prev_context)
+                    candidates.append((ref, c, score))
+
+            # 统一 owner 结构（即使 0 或 1 候选）
+            owner[i] = {"chosen": None, "candidates": [c[0] for c in candidates], "scores": {}}
+            for ref, _, sc in candidates:
+                owner[i]["scores"][ref] = sc
+
+            if len(candidates) == 0:
+                # 无人认领：留给未分配处理器
+                continue
+
+            # 按分数排序
+            candidates.sort(key=lambda x: x[2], reverse=True)
+            chosen_ref, chosen_case, best_score = candidates[0]
+
+            # 完全平分时的细化 tie-break：锚点强度 > 后块偏置 > (chunk, case_id)
+            if len(candidates) > 1 and abs(best_score - candidates[1][2]) < 1e-12:
+                def tie_key(t):
+                    ref, case, _ = t
+                    return (
+                        self._anchor_strength(case),
+                        1 if ref.chunk_idx == 1 else 0,
+                        ref.chunk_idx,
+                        ref.case_id
+                    )
+                candidates.sort(key=tie_key, reverse=True)
+                chosen_ref, chosen_case, best_score = candidates[0]
+
+            owner[i]["chosen"] = chosen_ref
+
+            # 标记需要从其他候选中移除该 msg（稍后统一应用）
+            for ref, case, sc in candidates[1:]:
+                pending_removals[(ref.chunk_idx, ref.case_id)].append(i)
+
+            # 并案：若锚点等价，Union 成同一全局案
+            for ref, case, sc in candidates[1:]:
+                if self._anchor_equivalent(chosen_case, case):
+                    uf.union(chosen_ref.uf_key(), ref.uf_key())
+
+            # 进入复核队列：分差接近
+            if len(candidates) > 1 and (best_score - candidates[1][2]) < self.review_gap_threshold:
+                conflicts.append({
+                    "msg_idx": i,
+                    "chosen": chosen_ref,
+                    "alt": candidates[1][0],
+                    "score_gap": round(best_score - candidates[1][2], 4),
+                    "reason": "small score gap in overlap"
+                })
+
+        # 应用剔除（统一修改，避免副作用/读写竞态）
+        for (ck, cid), to_remove in pending_removals.items():
+            target_cases = cases0 if ck == 0 else cases1
+            if 0 <= cid < len(target_cases):
+                ml = target_cases[cid].get("msg_list", [])
+                keep = sorted(set(ml) - set(to_remove))
+                target_cases[cid]["msg_list"] = keep
+            else:
+                errors.append(f"invalid case index to remove: chunk={ck}, case={cid}")
+
         return {
-            "global_cases": all_global_cases,
-            "total_messages": total_messages,
-            "chunks_processed": total_chunks,
-            "channels_processed": len(channel_results)
+            "owner": owner,
+            "cases_k_out": cases0,
+            "cases_k1_out": cases1,
+            "uf_parent": uf.parent,
+            "conflicts": conflicts,
+            "errors": errors
         }
+    
+    def build_global_mapping(
+        self,
+        pairwise_uf_parents: List[Dict[str, str]],
+        chunk_cases_list: List[List[Dict[str, Any]]]
+    ) -> Tuple[Dict[str, str], Dict[str, int]]:
+        """
+        把多个 pairwise merge 的 uf_parent 合并为一个全局 UF 映射。
+        返回：
+          - uf_parent_merged: 最终 UF 的 parent 映射
+          - local_to_global_id: "{chunk_idx}#{case_id}" -> global_case_id (int)
+        """
+        uf = UnionFind()
+        # 先将所有局部 case 注册
+        for chunk_idx, cases in enumerate(chunk_cases_list):
+            for cid, _ in enumerate(cases):
+                uf.find(f"{chunk_idx}#{cid}")
+
+        # 合并所有 pairwise union 结果
+        for parent_map in pairwise_uf_parents:
+            for node, parent in parent_map.items():
+                uf.union(node, parent)
+
+        # 归并到连续的全局 id
+        root_to_gid: Dict[str, int] = {}
+        local_to_global: Dict[str, int] = {}
+        gid = 0
+        for chunk_idx, cases in enumerate(chunk_cases_list):
+            for cid, _ in enumerate(cases):
+                key = f"{chunk_idx}#{cid}"
+                root = uf.find(key)
+                if root not in root_to_gid:
+                    root_to_gid[root] = gid
+                    gid += 1
+                local_to_global[key] = root_to_gid[root]
+
+        return uf.parent, local_to_global
+    
+    def aggregate_global_cases(
+        self,
+        chunk_cases_list: List[List[Dict[str, Any]]],
+        local_to_global: Dict[str, int]
+    ) -> List[Dict[str, Any]]:
+        """
+        把 (chunk, case) 聚合为全局 case：
+        - msg_list 合并去重升序
+        - 状态/最后时间/是否 active：取"更晚/更强"的（可按需自定义）
+        - summary：简单策略为拼接最近版本或保留信息量较大的（此处取最后出现的）
+        """
+        global_buckets: Dict[int, List[Tuple[int, int]]] = defaultdict(list)  # gid -> [(chunk_idx, case_id)]
+        for chunk_idx, cases in enumerate(chunk_cases_list):
+            for cid, _ in enumerate(cases):
+                key = f"{chunk_idx}#{cid}"
+                gid = local_to_global[key]
+                global_buckets[gid].append((chunk_idx, cid))
+
+        globals_out: List[Dict[str, Any]] = []
+        for gid, refs in sorted(global_buckets.items(), key=lambda x: x[0]):
+            all_msgs: Set[int] = set()
+            last_case: Optional[Dict[str, Any]] = None
+
+            # 简单的"最后写优先"
+            for chunk_idx, cid in sorted(refs):
+                c = chunk_cases_list[chunk_idx][cid]
+                all_msgs.update(c.get("msg_list", []))
+                last_case = c
+
+            if last_case is None:
+                continue
+
+            # 你可以在此自定义更复杂的汇总策略
+            globals_out.append({
+                "global_case_id": gid,
+                "msg_list": sorted(all_msgs),
+                "summary": last_case.get("summary", "N/A"),
+                "status": last_case.get("status", "N/A"),
+                "pending_party": last_case.get("pending_party", "N/A"),
+                "last_update": last_case.get("last_update", "N/A"),
+                "is_active_case": bool(last_case.get("is_active_case", False)),
+                "confidence": float(last_case.get("confidence", 0.0)),
+                "anchors": last_case.get("anchors", {})
+            })
+
+        return globals_out
+
+    def validate_global_assignment(
+        self,
+        global_cases: List[Dict[str, Any]], 
+        total_messages: int,
+        channel_name: str = ""
+    ) -> Dict[str, Any]:
+        """
+        验证全局案例分配的完整性：
+        - 检查消息覆盖率（0遗漏）
+        - 检查重复分配（0重复）
+        - 生成详细的分配报告
+        
+        Args:
+            global_cases: 全局cases列表
+            total_messages: 期望的总消息数
+            channel_name: 频道名称（用于日志）
+        
+        Returns:
+            验证报告字典
+        """
+        print(f"\n🔍 Validating global assignment for {channel_name}...")
+        
+        # 收集所有已分配的消息
+        all_assigned_msgs = []
+        case_stats = []
+        
+        for case_idx, case in enumerate(global_cases):
+            msg_list = case.get("msg_list", [])
+            all_assigned_msgs.extend(msg_list)
+            
+            case_stats.append({
+                "global_case_id": case.get("global_case_id", case_idx),
+                "msg_count": len(msg_list),
+                "msg_range": f"[{min(msg_list) if msg_list else 'N/A'}, {max(msg_list) if msg_list else 'N/A'}]",
+                "summary_preview": case.get("summary", "")[:50] + "..." if len(case.get("summary", "")) > 50 else case.get("summary", ""),
+                "status": case.get("status", "unknown")
+            })
+        
+        # 分析分配情况
+        assigned_set = set(all_assigned_msgs)
+        expected_set = set(range(total_messages))
+        
+        # 检查重复分配
+        duplicates = []
+        msg_count = defaultdict(int)
+        for msg in all_assigned_msgs:
+            msg_count[msg] += 1
+            if msg_count[msg] > 1:
+                duplicates.append(msg)
+        
+        # 检查遗漏
+        missing = sorted(list(expected_set - assigned_set))
+        
+        # 检查超出范围
+        out_of_range = sorted([msg for msg in assigned_set if msg >= total_messages or msg < 0])
+        
+        # 生成统计
+        coverage_rate = len(assigned_set & expected_set) / total_messages * 100 if total_messages > 0 else 0
+        
+        report = {
+            "channel": channel_name,
+            "total_cases": len(global_cases),
+            "total_messages_expected": total_messages,
+            "total_messages_assigned": len(all_assigned_msgs),
+            "unique_messages_assigned": len(assigned_set),
+            "coverage_rate": round(coverage_rate, 2),
+            "duplicates": {
+                "count": len(set(duplicates)),
+                "messages": sorted(list(set(duplicates)))[:20],  # 限制显示数量
+                "total_duplicate_assignments": len(duplicates)
+            },
+            "missing": {
+                "count": len(missing),
+                "messages": missing[:20]  # 限制显示数量
+            },
+            "out_of_range": {
+                "count": len(out_of_range),
+                "messages": out_of_range[:10]
+            },
+            "case_stats": case_stats,
+            "is_valid": len(missing) == 0 and len(set(duplicates)) == 0 and len(out_of_range) == 0
+        }
+        
+        # 打印报告
+        print(f"  📊 Cases: {report['total_cases']}")
+        print(f"  📈 Coverage: {report['coverage_rate']:.1f}% ({report['unique_messages_assigned']}/{report['total_messages_expected']})")
+        
+        if report['duplicates']['count'] > 0:
+            print(f"  ⚠️  Duplicates: {report['duplicates']['count']} messages, {report['duplicates']['total_duplicate_assignments']} total assignments")
+            print(f"     Sample: {report['duplicates']['messages'][:5]}")
+        
+        if report['missing']['count'] > 0:
+            print(f"  ❌ Missing: {report['missing']['count']} messages")
+            print(f"     Sample: {report['missing']['messages'][:5]}")
+        
+        if report['out_of_range']['count'] > 0:
+            print(f"  🚫 Out of range: {report['out_of_range']['count']} messages")
+            print(f"     Sample: {report['out_of_range']['messages'][:5]}")
+        
+        if report['is_valid']:
+            print(f"  ✅ Validation PASSED - Perfect assignment!")
+        else:
+            print(f"  ❌ Validation FAILED - Assignment issues detected")
+        
+        return report
+
+    def repair_global_assignment(
+        self,
+        global_cases: List[Dict[str, Any]], 
+        total_messages: int,
+        channel_name: str = ""
+    ) -> List[Dict[str, Any]]:
+        """
+        修复全局分配中的问题：
+        - 去除重复分配（保留第一个分配）
+        - 将遗漏消息分配到合适的case或创建misc case
+        
+        Args:
+            global_cases: 需要修复的全局cases
+            total_messages: 总消息数
+            channel_name: 频道名称
+            
+        Returns:
+            修复后的全局cases
+        """
+        print(f"\n🔧 Repairing global assignment for {channel_name}...")
+        
+        # 深拷贝避免修改原数据
+        repaired_cases = copy.deepcopy(global_cases)
+        
+        # Step 1: 去重 - 保留第一次出现的分配
+        msg_to_first_case = {}
+        removals = []
+        
+        for case_idx, case in enumerate(repaired_cases):
+            msg_list = case.get("msg_list", [])
+            keep_msgs = []
+            
+            for msg in msg_list:
+                if msg in msg_to_first_case:
+                    # 重复分配，记录移除
+                    removals.append({
+                        "msg": msg,
+                        "from_case": case_idx,
+                        "kept_in_case": msg_to_first_case[msg]
+                    })
+                else:
+                    # 首次分配，保留
+                    msg_to_first_case[msg] = case_idx
+                    keep_msgs.append(msg)
+            
+            case["msg_list"] = sorted(keep_msgs)
+        
+        if removals:
+            print(f"  🔧 Removed {len(removals)} duplicate assignments")
+        
+        # Step 2: 处理遗漏消息
+        assigned_msgs = set(msg_to_first_case.keys())
+        expected_msgs = set(range(total_messages))
+        missing_msgs = sorted(list(expected_msgs - assigned_msgs))
+        
+        if missing_msgs:
+            print(f"  🔧 Found {len(missing_msgs)} missing messages")
+            
+            # 创建misc case处理遗漏消息
+            misc_case = {
+                "global_case_id": max([c.get("global_case_id", i) for i, c in enumerate(repaired_cases)], default=-1) + 1,
+                "msg_list": missing_msgs,
+                "summary": f"auto_repaired: {len(missing_msgs)} previously unassigned messages",
+                "status": "open",
+                "pending_party": "N/A",
+                "last_update": "N/A",
+                "is_active_case": False,
+                "confidence": 0.2,
+                "anchors": {}
+            }
+            
+            repaired_cases.append(misc_case)
+            print(f"  ➕ Created repair case {misc_case['global_case_id']} for {len(missing_msgs)} missing messages")
+        
+        # Step 3: 清理空cases
+        non_empty_cases = [case for case in repaired_cases if case.get("msg_list")]
+        removed_empty = len(repaired_cases) - len(non_empty_cases)
+        
+        if removed_empty > 0:
+            print(f"  🧹 Removed {removed_empty} empty cases")
+        
+        # Step 4: 重新分配global_case_id确保连续性
+        for i, case in enumerate(non_empty_cases):
+            case["global_case_id"] = i
+        
+        print(f"  ✅ Repair completed: {len(non_empty_cases)} final cases")
+        
+        return non_empty_cases
+
+
+def save_channel_results(channel_result: Dict[str, Any], channel_url: str, channel_idx: int, channel_df: pd.DataFrame, output_dir: str) -> None:
+    """Save individual channel results to separate files"""
+    import json
+    
+    global_cases = channel_result.get('global_cases', [])
+    total_analyzed = channel_result.get('total_messages', 0)
+    
+    print(f"\n--- Saving Channel {channel_idx + 1} Results ---")
+    print(f"Found {len(global_cases)} cases across {total_analyzed} messages")
+    
+    # Save channel cases to JSON
+    channel_cases_file = os.path.join(output_dir, f"cases_channel_{channel_idx + 1}.json")
+    save_result = {
+        "channel_url": channel_url,
+        "global_cases": global_cases,
+        "total_messages": total_analyzed,
+        "chunks_processed": channel_result.get('chunks_processed', 0)
+    }
+    
+    with open(channel_cases_file, 'w', encoding='utf-8') as f:
+        json.dump(save_result, f, indent=2, ensure_ascii=False)
+    print(f"Channel cases saved to: {channel_cases_file}")
+    
+    # Generate annotated CSV for this channel
+    df_annotated = channel_df.copy()
+    df_annotated['case_id'] = -1  # Default: unassigned
+    
+    # Map case assignments using channel's local msg_ch_idx
+    assignment_stats = {"assigned": 0, "out_of_range": 0, "conflicts": 0}
+    
+    for case in global_cases:
+        case_id = case.get('global_case_id', -1)
+        for msg_idx in case.get('msg_list', []):
+            if 0 <= msg_idx < len(df_annotated):
+                if df_annotated.loc[msg_idx, 'case_id'] != -1:
+                    assignment_stats["conflicts"] += 1
+                    print(f"⚠️  Warning: Message {msg_idx} already assigned, reassigning to case {case_id}")
+                df_annotated.loc[msg_idx, 'case_id'] = case_id
+                assignment_stats["assigned"] += 1
+            else:
+                assignment_stats["out_of_range"] += 1
+                print(f"⚠️  Warning: Message index {msg_idx} out of range (max: {len(df_annotated)-1})")
+    
+    # Save annotated CSV for this channel
+    channel_segmented_file = os.path.join(output_dir, f"segmented_channel_{channel_idx + 1}.csv")
+    df_annotated.to_csv(channel_segmented_file, index=False, encoding='utf-8')
+    print(f"Channel annotated CSV saved to: {channel_segmented_file}")
+    
+    # Display assignment statistics for this channel
+    assigned_count = (df_annotated['case_id'] >= 0).sum()
+    coverage_rate = assigned_count / len(df_annotated) * 100 if len(df_annotated) > 0 else 0
+    
+    print(f"📊 Channel {channel_idx + 1} Assignment Statistics:")
+    print(f"   Total messages: {len(df_annotated)}")
+    print(f"   Assigned: {assigned_count} ({coverage_rate:.1f}%)")
+    print(f"   Unassigned: {len(df_annotated) - assigned_count}")
+    if assignment_stats["out_of_range"] > 0:
+        print(f"   Out of range: {assignment_stats['out_of_range']}")
+    if assignment_stats["conflicts"] > 0:
+        print(f"   Conflicts resolved: {assignment_stats['conflicts']}")
+    
+    if coverage_rate == 100.0:
+        print(f"✅ Perfect coverage achieved for channel {channel_idx + 1}!")
+    else:
+        print(f"⚠️  Coverage incomplete for channel {channel_idx + 1}")
 
 
 def test_case_segmentation(chunks: List[Chunk], llm_client: 'LLMClient', output_dir: str) -> Dict[str, Any]:
@@ -1908,107 +2271,60 @@ def main() -> None:
     try:
         # Stage 1: File Processing
         processor = FileProcessor(args.input, args.output_dir)
-        df_clean = processor.process()
+        channel_data_list = processor.process()
         
-        if df_clean is None:
+        if not channel_data_list:
             print("Error: File processing failed")
             exit(1)
         
-        # Stage 2: Channel Segmentation
-        segmenter = ChannelSegmenter(df_clean, args.chunk_size, args.overlap)
-        chunks = segmenter.generate_chunks()
-        
-        print(f"Generated {len(chunks)} chunks with chunk_size={args.chunk_size}, overlap={args.overlap}")
+        print(f"Found {len(channel_data_list)} channels to process")
         
         # Stage 3: Initialize LLM Client for case segmentation
         llm_client = LLMClient(model=args.model)
         print(f"LLM Client initialized with model: {args.model}")
         
-        # Processing based on test flags
-        if args.test_case_segment:
-            # Test case segmentation functionality
-            test_case_segmentation(chunks, llm_client, args.output_dir)
+        # Process each channel separately
         
-        if args.test_tail_summary:
-            # Test tail summary functionality
-            test_tail_summary(chunks, llm_client, args.output_dir, args.overlap)
+        for channel_idx, channel_data in enumerate(channel_data_list):
+            channel_url = channel_data["channel_url"]
+            channel_df = channel_data["dataframe"]
+            
+            print(f"\n=== Processing Channel {channel_idx + 1}/{len(channel_data_list)} ===")
+            print(f"Channel: {channel_url[:60]}...")
+            print(f"Messages: {len(channel_df)}")
+            
+            # Stage 2: Channel Segmentation for this channel
+            segmenter = ChannelSegmenter(channel_df, args.chunk_size, args.overlap)
+            chunks = segmenter.generate_chunks()
+            
+            print(f"Generated {len(chunks)} chunks with chunk_size={args.chunk_size}, overlap={args.overlap}")
+            
+            # Processing based on test flags
+            if args.test_case_segment:
+                # Test case segmentation functionality on this channel
+                test_case_segmentation(chunks, llm_client, args.output_dir)
+            
+            if args.test_tail_summary:
+                # Test tail summary functionality on this channel
+                test_tail_summary(chunks, llm_client, args.output_dir, args.overlap)
+            
+            if not args.test_case_segment and not args.test_tail_summary:
+                # Process this channel with full pipeline and save results immediately
+                channel_result = segmenter.process_all_chunks_with_merge(llm_client)
+                
+                # Save this channel's results independently
+                save_channel_results(channel_result, channel_url, channel_idx, channel_df, args.output_dir)
         
+        # For test modes, exit after processing all channels
+        if args.test_case_segment or args.test_tail_summary:
+            return
+        
+        # Summary for all channels
         if not args.test_case_segment and not args.test_tail_summary:
-            # Default: Full pipeline processing
-            # Stage 4-N: Complete Multi-Chunk Processing with Merge
-            print(f"\n--- Stage 4-N: Complete Multi-Chunk Processing with Merge ---")
-            print(f"Processing all {len(chunks)} chunks with overlap merge...")
-            
-            # Process all chunks with merge
-            final_result = segmenter.process_all_chunks_with_merge(llm_client)
-            
-            # Display results
-            global_cases = final_result.get('global_cases', [])
-            total_analyzed = final_result.get('total_messages', 0)
-            
-            print(f"✅ Complete pipeline finished!")
-            print(f"Found {len(global_cases)} global cases across {total_analyzed} messages")
-            
-            # Show global case summary
-            for i, case in enumerate(global_cases):
-                print(f"  Global Case {i+1}: {case.get('summary', 'No summary')[:100]}...")
-                print(f"    Status: {case.get('status', 'unknown')} | Active: {case.get('is_active_case', False)} | Messages: {len(case.get('msg_list', []))}")
-            
-            # Save global results with proper structure
-            import json
-            save_result = {
-                "global_cases": global_cases,
-                "total_messages": total_analyzed,
-                "chunks_processed": final_result.get('chunks_processed', 0),
-                "channels_processed": final_result.get('channels_processed', 1)
-            }
-            cases_output_file = os.path.join(args.output_dir, "cases.json")
-            with open(cases_output_file, 'w', encoding='utf-8') as f:
-                json.dump(save_result, f, indent=2, ensure_ascii=False)
-            print(f"Global cases saved to: {cases_output_file}")
-            
-            # Generate annotated CSV with improved mapping
-            print(f"\n--- Generating Annotated CSV ---")
-            df_annotated = df_clean.copy()
-            df_annotated['case_id'] = -1  # Default: unassigned
-            
-            # Create robust message_index to case_id mapping
-            assignment_stats = {"assigned": 0, "out_of_range": 0, "conflicts": 0}
-            
-            for case in global_cases:
-                case_id = case.get('global_case_id', -1)
-                for msg_idx in case.get('msg_list', []):
-                    if 0 <= msg_idx < len(df_annotated):
-                        if df_annotated.loc[msg_idx, 'case_id'] != -1:
-                            assignment_stats["conflicts"] += 1
-                            print(f"⚠️  Warning: Message {msg_idx} already assigned to case {df_annotated.loc[msg_idx, 'case_id']}, reassigning to case {case_id}")
-                        df_annotated.loc[msg_idx, 'case_id'] = case_id
-                        assignment_stats["assigned"] += 1
-                    else:
-                        assignment_stats["out_of_range"] += 1
-                        print(f"⚠️  Warning: Message index {msg_idx} is out of range (max: {len(df_annotated)-1})")
-            
-            # Save annotated CSV
-            segmented_output_file = os.path.join(args.output_dir, "segmented.csv")
-            df_annotated.to_csv(segmented_output_file, index=False, encoding='utf-8')
-            print(f"Annotated CSV saved to: {segmented_output_file}")
-            
-            # Enhanced summary statistics
-            assigned_count = (df_annotated['case_id'] >= 0).sum()
-            coverage_rate = assigned_count / len(df_annotated) * 100
-            print(f"\n📊 Final Assignment Statistics:")
-            print(f"   Total messages: {len(df_annotated)}")
-            print(f"   Assigned: {assigned_count} ({coverage_rate:.1f}%)")
-            print(f"   Unassigned: {len(df_annotated) - assigned_count}")
-            if assignment_stats["out_of_range"] > 0:
-                print(f"   Out of range: {assignment_stats['out_of_range']}")
-            if assignment_stats["conflicts"] > 0:
-                print(f"   Conflicts resolved: {assignment_stats['conflicts']}")
-            
-            if coverage_rate == 100.0:
-                print(f"✅ Perfect coverage achieved!")
-            else:
-                print(f"⚠️  Coverage incomplete - {len(df_annotated) - assigned_count} messages unassigned")
+            print(f"\n✅ All {len(channel_data_list)} channels processed successfully!")
+            print(f"Each channel's results saved to separate files:")
+            for i in range(len(channel_data_list)):
+                print(f"  Channel {i + 1}: cases_channel_{i + 1}.json, segmented_channel_{i + 1}.csv")
         
         print(f"\n✅ Pipeline complete!")
         
