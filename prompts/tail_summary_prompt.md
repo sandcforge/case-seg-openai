@@ -1,98 +1,71 @@
-**IMPORTANT: Your response MUST be valid JSON only. Do not include any text before or after the JSON. The response should be a single JSON object.**
+You are a senior conversation analyst. Create the **Previous Context Summary** for the next chunk from the current chunk messages and prior context.
 
-Previous context summary (JSON format):
-
-```json
+### Output JSON Schema (return JSON only)
 {
   "case_anchor_rules": {
     "priority_order": "tracking_id > order_id > buyer_handle > topic",
-    "multi_order_rule": "If multiple orders share one tracking_id, treat them as ONE 'multi_order_package' case unless topics are clearly separate",
-    "default_scope_rules": "Address change / refund / fee questions default to order-level; payout/app issues default to system-level"
+    "multi_order_rule": "If multiple orders share one tracking_id, treat them as ONE 'multi_order_package' unless topics differ",
+    "default_scope_rules": "Address change / refund / fee → order-level; payout/app issues → system-level"
   },
   "active_case_hints": [
     {
-      "topic": "short title, e.g., Address change | LDP claim | UPS claim | Chargeback | Pickup->Ship toggle | Refund error | Payout retry | App bug | Data export | Fee adjustment",
+      "topic": "short title",
       "program": "LDP|UPS|Chargeback|AddressChange|ShippingMode|Refund|Cancellation|FeeAdjustment|Payout|AppBug|DataExport|LiveVisibility|TaxExempt|Other",
       "scope": "single_order|multi_order_package|buyer_account|system",
       "anchor": {
-        "tracking": ["1Z...|12-14 digit FedEx|USPS 92..."],
-        "order_ids": ["9759-xxxxxx-xxxx", "..."],
-        "buyers": ["@handle", "..."],
+        "tracking": ["..."],
+        "order_ids": ["..."],
+        "buyers": ["..."],
         "carrier": "UPS|FedEx|USPS|N/A"
       },
       "status": "open|ongoing|resolved|blocked",
       "shipping_state": "label_created|picked_up|in_transit|delivered|delayed|lost|N/A",
-      "last_action": "what changed, e.g., 'switched to pickup', 'refund issued', 'reimbursed to seller balance', 'address updated'",
+      "last_action": "e.g., 'refund issued', 'address updated'",
       "last_update": "ISO timestamp or N/A",
       "pending_party": "seller|agent|buyer|carrier|platform|N/A",
-      "amounts": {
-        "credit_to_seller": "number or null",
-        "refund_to_buyer": "number or null"
-      },
-      "returns_to_previous_topic": "boolean",
-      "possible_new_session": "boolean", 
-      "keywords": ["refund", "shipment", "pickup", "address change", "claim", "chargeback", "fee", "payout", "bug"],
-      "evidence_msg_ch_idx": ["list of msg_ch_idx numbers"]
-    }
-  ],
-  "recent_messages": [
-    {
-      "msg_ch_idx": "number",
-      "sender_id": "sender_id", 
-      "role": "role",
-      "timestamp": "ISO timestamp",
-      "text": "truncated text"
+      "amounts": {"credit_to_seller": "number or null", "refund_to_buyer": "number or null"},
+      "returns_to_previous_topic": true,
+      "possible_new_session": false,
+      "keywords": ["refund","shipment","pickup","address change","claim","chargeback","fee","payout","bug"],
+      "evidence_msg_ch_idx": [0,1,2]
     }
   ],
   "meta": {
-    "overlap": "number",
-    "channel": "id|url or N/A",
-    "time_window": ["start ISO", "end ISO"]
+    "overlap": <int>,
+    "channel": "string",
+    "time_window": ["start ISO","end ISO"]
   },
   "guidance": {
-    "role_normalization": "map psops/support to 'agent', seller to 'seller', customer to 'buyer'",
-    "pronoun_resolution": "prefer the most recent explicit entity when resolving pronouns like 'this order'", 
-    "carrier_detection": "detect carrier by tracking pattern (UPS often starts with 1Z; USPS often starts with 9; FedEx typically 12–14 digits, no hyphens)",
-    "resolved_status_rule": "only mark 'resolved' if no follow-up on the same topic appears afterwards in the recent window; otherwise keep 'ongoing'"
+    "role_normalization": "map psops/support→agent, seller→seller, customer→buyer",
+    "pronoun_resolution": "prefer most recent explicit entity for pronouns",
+    "carrier_detection": "UPS starts 1Z; USPS starts 9; FedEx 12–14 digits",
+    "resolved_status_rule": "resolved only if no follow-up appears afterwards"
   }
 }
-```
 
-<<<INSERT_PREVIOUS_CONTEXT_SUMMARY_BLOCK_HERE>>>
+### Rules
+- Include ≤5 active cases (status=open/ongoing/blocked) that matter for the next chunk.
+- Use anchor priority: tracking_id > order_id > buyer_handle > topic.
+- Merge cases sharing the same tracking_id unless clearly different topics.
+- Do not invent entities/amounts. Fill last_update from the newest message in the case.
 
----
+----------------------------
+# INPUTS (fill these blocks before sending to the model)
 
-## Current chunk messages
+## [INPUT: PREVIOUS_CONTEXT_SUMMARY_JSON]
+{PUT_PREVIOUS_CONTEXT_SUMMARY_JSON_HERE}
 
-The following lines are the messages you must analyze:
+## [INPUT: CURRENT_CHUNK_MESSAGES]
+# Each line: msg_ch_idx | sender id | role | timestamp | text
+<<<BEGIN_CURRENT_CHUNK_MESSAGES>>>
+PUT_CURRENT_CHUNK_MESSAGE_LINES_HERE
+<<<END_CURRENT_CHUNK_MESSAGES>>>
 
-```
-<<<INSERT_CHUNK_BLOCK_HERE>>>   # each line: msg_ch_idx | sender id | role | timestamp | text
-```
+## [INPUT: META]
+overlap: PUT_OVERLAP_INT_HERE
+channel: "PUT_CHANNEL_ID_OR_URL_OR_NA_HERE"
+time_window: ["PUT_START_ISO","PUT_END_ISO"]
+----------------------------
 
----
-
-## Task
-
-Based on the current chunk messages and any previous context, generate a tail summary in **strict JSON format** that will be used as the "Previous context summary" for the next chunk.
-
-**CRITICAL REQUIREMENTS:**
-1. Your response MUST be valid JSON only - no markdown, no code blocks, no extra text
-2. Follow the exact JSON schema shown in the template above
-3. Extract up to 5 unresolved/ongoing cases for `active_case_hints` array
-4. Include the last ≤ overlap messages in `recent_messages` array  
-5. Fill in `meta` object with overlap, channel, and time_window information
-6. Use actual values from the current chunk, not placeholder text
-
-**JSON Response Format:**
-```json
-{
-  "case_anchor_rules": { ... },
-  "active_case_hints": [ ... ],
-  "recent_messages": [ ... ],
-  "meta": { ... },
-  "guidance": { ... }
-}
-```
-
-**IMPORTANT:** Respond with ONLY the JSON object. Do not include any text before or after the JSON.
+### Return
+Return **only** the JSON object matching the Output JSON Schema (no extra text).

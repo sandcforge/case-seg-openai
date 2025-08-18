@@ -27,7 +27,9 @@ import copy
 from collections import defaultdict
 
 # Pydantic and OpenAI imports
-from pydantic import BaseModel
+from typing import List, Optional, Literal, Tuple
+from pydantic import BaseModel, Field  # type: ignore
+
 import openai # type: ignore
 
 # Load environment variables
@@ -51,14 +53,89 @@ class CaseItem(BaseModel):
     is_active_case: bool
     confidence: float
 
-class CasesResponse(BaseModel):
+class CasesSegmentationResponse(BaseModel):
     """Complete response structure for case segmentation"""
     model_config = {"extra": "forbid"}  # Ensures additionalProperties: false
     
     complete_cases: List[CaseItem]
     total_messages_analyzed: int
+    llm_duration_seconds: Optional[float] = None
 
 
+class CaseAnchorRules(BaseModel):
+    """Case anchor rules structure"""
+    model_config = {"extra": "forbid"}
+    priority_order: str = Field(..., description="优先级规则说明")
+    multi_order_rule: str = Field(..., description="多订单处理规则")
+    default_scope_rules: str = Field(..., description="默认范围规则")
+
+class AnchorInfo(BaseModel):
+    """Anchor information structure"""
+    model_config = {"extra": "forbid"}
+    tracking: List[str] = Field(..., description="物流单号列表")
+    order_ids: List[str] = Field(..., description="订单号列表")
+    buyers: List[str] = Field(..., description="买家标识列表")
+    carrier: Literal["UPS", "FedEx", "USPS", "N/A"] = Field(
+        ..., description="承运商"
+    )
+
+class Amounts(BaseModel):
+    """Monetary amounts involved in the case"""
+    model_config = {"extra": "forbid"}
+    credit_to_seller: Optional[float] = Field(
+        None, description="需要划给卖家的信用/补偿金额"
+    )
+    refund_to_buyer: Optional[float] = Field(
+        None, description="需要退还给买家的金额"
+    )
+
+class ActiveCaseHint(BaseModel):
+    """Individual active case hint structure"""
+    model_config = {"extra": "forbid"}
+    topic: str
+    program: str
+    scope: str
+    anchor: AnchorInfo
+    status: str
+    shipping_state: str
+    last_action: str
+    last_update: str  # 建议使用 ISO8601 字符串或直接 datetime
+    pending_party: str
+    amounts: Amounts  # ← 由 Dict 改为定形对象，避免 schema 不一致
+    returns_to_previous_topic: bool
+    possible_new_session: bool
+    keywords: List[str]
+    evidence_msg_ch_idx: List[int]
+
+class TimeWindow(BaseModel):
+    """Start/End window as ISO8601 strings"""
+    model_config = {"extra": "forbid"}
+    start_iso: str = Field(..., description="开始时间，ISO8601")
+    end_iso: str = Field(..., description="结束时间，ISO8601")
+
+
+class MetaInfo(BaseModel):
+    """Meta information structure"""
+    model_config = {"extra": "forbid"}
+    overlap: int
+    channel: str
+    time_window: TimeWindow
+
+class GuidanceInfo(BaseModel):
+    """Guidance information structure"""
+    model_config = {"extra": "forbid"}
+    role_normalization: str
+    pronoun_resolution: str
+    carrier_detection: str
+    resolved_status_rule: str
+
+class TailSummaryResponse(BaseModel):
+    """Complete response structure for tail summary generation"""
+    model_config = {"extra": "forbid"}  # => additionalProperties=false
+    case_anchor_rules: CaseAnchorRules
+    active_case_hints: List[ActiveCaseHint]
+    meta: MetaInfo
+    guidance: GuidanceInfo
 
 # ----------------------------
 # Repair Chunk Output Utilities
@@ -667,145 +744,67 @@ class Chunk:
             formatted_lines.append(self.format_one_msg_for_prompt(row))
         return '\n'.join(formatted_lines)
     
-    def get_tail_messages_for_prompt(self, overlap_size: int) -> List[str]:
-        """Get the last N messages from this chunk for tail summary"""
-        if len(self.messages) == 0:
-            return []
-        
-        # Get the last 'overlap_size' messages, but at least 5 if available
-        num_messages = max(min(overlap_size, len(self.messages)), min(5, len(self.messages)))
-        tail_messages = self.messages.tail(num_messages)
-        
-        formatted_messages = []
-        for _, row in tail_messages.iterrows():
-            formatted_messages.append(self.format_one_msg_for_prompt(row))
-        
-        return formatted_messages
-    
-    def extract_case_hints(self, complete_cases: List[Dict[str, Any]]) -> List[str]:
-        """Extract active case hints from complete_cases for tail summary"""
-        if not complete_cases:
-            return ["None"]
-        
-        hints = []
-        for case in complete_cases[:5]:  # Max 5 hints as per prompt
-            status = case.get('status', 'open').lower()
-            
-            # Only include unresolved cases
-            if status in ['open', 'ongoing', 'blocked']:
-                msg_list = case.get('msg_list', [])
-                summary = case.get('summary', 'Case summary not available')
-                
-                # Extract key information from summary (simplified version)
-                hint = f"- topic: \"{summary[:50]}{'...' if len(summary) > 50 else ''}\"\n"
-                hint += f"  status: \"{status}\"\n"
-                hint += f"  evidence_msg_ch_idx: {msg_list}"
-                
-                hints.append(hint)
-        
-        return hints if hints else ["None"]
-    
     def generate_tail_summary(self, 
                             current_messages: str,
-                            case_segmentation_result: Dict[str, Any], 
                             overlap_size: int,
                             llm_client: 'LLMClient', 
-                            previous_context: str = "") -> str:
+                            previous_context: str = "") -> Dict[str, Any]:
         """Generate tail summary using LLM for the next chunk"""
         # Load the prompt template
         try:
-            prompt_template = load_prompt("tail_summary_prompt.md")
+            prompt_template = llm_client.load_prompt("tail_summary_prompt.md")
         except FileNotFoundError as e:
             raise RuntimeError(f"Cannot load tail summary prompt: {e}")
         
-        # Extract complete cases from segmentation result
-        complete_cases = case_segmentation_result.get('complete_cases', [])
-        
-        # Get recent messages from this chunk
-        recent_messages = self.get_tail_messages_for_prompt(overlap_size)
-        recent_messages_block = '\n'.join(recent_messages)
-        
-        # Use provided current messages instead of formatting internally
-        chunk_messages_block = current_messages
-        
-        # Extract case hints
-        case_hints = self.extract_case_hints(complete_cases)
-        case_hints_block = '\n'.join(case_hints)
-        
-        # Get time window
+        # Get time window from messages
         if len(self.messages) > 0:
-            start_time = self.messages.iloc[0]['Created Time']
-            end_time = self.messages.iloc[-1]['Created Time']
-            time_window = f'["{start_time}", "{end_time}"]'
+            start_time = str(self.messages.iloc[0]['Created Time'])
+            end_time = str(self.messages.iloc[-1]['Created Time'])
         else:
-            time_window = '["N/A", "N/A"]'
+            start_time = "N/A"
+            end_time = "N/A"
         
-        # Build previous context block
-        if previous_context:
-            context_block = previous_context
-        else:
-            # Build context block for this chunk
-            context_block = f"""ACTIVE_CASE_HINTS:
-{case_hints_block}
-
-RECENT_MESSAGES:
-{recent_messages_block}
-
-META (optional):
-- overlap: {overlap_size}
-- channel: {self.channel_url}
-- time_window: {time_window}"""
+        # Prepare previous context JSON (default to empty object if none provided)
+        previous_context_json = previous_context if previous_context else "{}"
         
-        # Replace placeholders in prompt
+        # Replace placeholders in the new prompt format
         final_prompt = prompt_template.replace(
-            "<<<INSERT_PREVIOUS_CONTEXT_SUMMARY_BLOCK_HERE>>>", 
-            context_block
+            "{PUT_PREVIOUS_CONTEXT_SUMMARY_JSON_HERE}", 
+            previous_context_json
         ).replace(
-            "<<<INSERT_CHUNK_BLOCK_HERE>>>", 
-            chunk_messages_block
+            "PUT_CURRENT_CHUNK_MESSAGE_LINES_HERE", 
+            current_messages
+        ).replace(
+            "PUT_OVERLAP_INT_HERE", 
+            str(overlap_size)
+        ).replace(
+            "PUT_CHANNEL_ID_OR_URL_OR_NA_HERE", 
+            self.channel_url
+        ).replace(
+            "PUT_START_ISO", 
+            start_time
+        ).replace(
+            "PUT_END_ISO", 
+            end_time
         )
         
-        # Generate tail summary using LLM
+        # Generate tail summary using LLM with structured output
         try:
-            response = llm_client.generate(final_prompt, call_label="tail_summary")
+            # Use structured output for OpenAI models
+            structured_response = llm_client.generate_structured(
+                final_prompt, 
+                TailSummaryResponse, 
+                call_label="tail_summary"
+            )
+            # Convert Pydantic response to dict for compatibility
+            result = structured_response.model_dump()
             
-            # Parse and validate JSON response
+            # Store as JSON string for later use (if needed)
             import json
-            try:
-                # Try direct JSON parsing first
-                tail_summary_json = json.loads(response)
-                
-                # Validate required fields
-                required_fields = ["case_anchor_rules", "active_case_hints", "recent_messages", "meta"]
-                missing_fields = [field for field in required_fields if field not in tail_summary_json]
-                
-                if missing_fields:
-                    print(f"⚠️  Warning: Tail summary missing fields: {missing_fields}")
-                
-                # Convert back to JSON string for storage and return
-                self.tail_summary = json.dumps(tail_summary_json, ensure_ascii=False)
-                return self.tail_summary
-                
-            except json.JSONDecodeError as json_error:
-                # Fallback: extract JSON from response using regex
-                import re
-                json_match = re.search(r'\{.*\}', response, re.DOTALL)
-                
-                if json_match:
-                    try:
-                        tail_summary_json = json.loads(json_match.group())
-                        self.tail_summary = json.dumps(tail_summary_json, ensure_ascii=False)
-                        print(f"✅ Recovered JSON from LLM response for chunk {self.chunk_id}")
-                        return self.tail_summary
-                    except json.JSONDecodeError:
-                        pass
-                
-                # Final fallback: return raw response with warning
-                print(f"⚠️  Warning: Could not parse JSON from tail summary for chunk {self.chunk_id}: {json_error}")
-                print(f"Raw response preview: {response[:200]}...")
-
-                self.tail_summary = None
-                return self.tail_summary
+            self.tail_summary = json.dumps(result, ensure_ascii=False)
+            
+            # Return the dict directly
+            return result
                 
         except Exception as e:
             raise RuntimeError(f"Failed to generate tail summary for chunk {self.chunk_id}: {e}")
@@ -817,7 +816,7 @@ META (optional):
         """Generate case segments using LLM for current chunk messages"""
         # Load the segmentation prompt template
         try:
-            prompt_template = load_prompt("segmentation_prompt.md")
+            prompt_template = llm_client.load_prompt("segmentation_prompt.md")
         except FileNotFoundError as e:
             raise RuntimeError(f"Cannot load segmentation prompt: {e}")
         
@@ -833,21 +832,22 @@ META (optional):
         # Generate case segments using LLM
         try:
             # Use structured output for OpenAI models, fallback to JSON parsing for Claude
-            if llm_client.provider == "openai" and CasesResponse:
+            if llm_client.provider == "openai" and CasesSegmentationResponse:
                 # Structured output with Pydantic schema
                 structured_response = llm_client.generate_structured(
                     final_prompt, 
-                    CasesResponse, 
+                    CasesSegmentationResponse, 
                     call_label="case_segmentation"
                 )
                 # Convert Pydantic response to dict for compatibility
                 result = structured_response.model_dump()
                 
             
-            # 解析previous context用于repair
+            # 使用 previous context (现在是字典)
             prev_context = None
-            if previous_chunk_tail_summary:
-                prev_context = self._parse_tail_summary(previous_chunk_tail_summary)
+            if previous_chunk_tail_summary and isinstance(previous_chunk_tail_summary, dict):
+                if "active_case_hints" in previous_chunk_tail_summary:
+                    prev_context = {"ACTIVE_CASE_HINTS": previous_chunk_tail_summary["active_case_hints"]}
             
             # 直接使用修复函数
             repair_result = self.repair_case_segment_output(
@@ -885,24 +885,6 @@ META (optional):
         except Exception as e:
             raise RuntimeError(f"Failed to generate case segments for chunk {self.chunk_id}: {e}")
     
-    def _parse_tail_summary(self, tail_summary: str) -> Dict[str, Any]:
-        """解析tail summary为结构化数据供repair使用 - 支持JSON格式"""
-        if not tail_summary:
-            return {}
-            
-        try:
-            # 首先尝试解析JSON格式
-            import json
-            tail_data = json.loads(tail_summary)
-            
-            # 从JSON结构提取ACTIVE_CASE_HINTS
-            if isinstance(tail_data, dict) and "active_case_hints" in tail_data:
-                return {"ACTIVE_CASE_HINTS": tail_data["active_case_hints"]}
-            
-        except json.JSONDecodeError:
-            pass
-            
-        return {}
     
     
     def repair_case_segment_output(self, 
@@ -1129,15 +1111,6 @@ META (optional):
         }
 
 
-def load_prompt(filename: str) -> str:
-    """Load prompt template from prompts directory"""
-    prompt_path = os.path.join("prompts", filename)
-    try:
-        with open(prompt_path, 'r', encoding='utf-8') as f:
-            return f.read()
-    except FileNotFoundError:
-        raise FileNotFoundError(f"Prompt file not found: {prompt_path}")
-
 
 class LLMClient:
     """LLM client supporting both Claude (Anthropic) and OpenAI models"""
@@ -1174,7 +1147,9 @@ class LLMClient:
     
     def generate(self, prompt: str, call_label: str = "unknown", max_tokens: int = 12000) -> str:
         """Generate response using appropriate API with debug logging"""
+        import time
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        start_time = time.time()
         
         # Create debug output directory if it doesn't exist
         debug_dir = "debug_output"
@@ -1187,7 +1162,7 @@ class LLMClient:
             # Log the request
             with open(debug_file, 'w', encoding='utf-8') as f:
                 f.write("=== LLM CALL DEBUG LOG ===\n")
-                f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Start Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.write(f"Call Label: {call_label}\n")
                 f.write(f"Model: {self.model} ({self.provider.title()})\n")
                 f.write(f"Max Tokens: {max_tokens}\n")
@@ -1202,11 +1177,16 @@ class LLMClient:
             else:
                 response = self._call_anthropic(prompt, max_tokens)
             
+            end_time = time.time()
+            duration_seconds = end_time - start_time
+            
             # Log the successful response
             with open(debug_file, 'a', encoding='utf-8') as f:
                 f.write("=== RESPONSE ===\n")
                 f.write(response)
                 f.write(f"\n\nResponse Length: {len(response)} characters\n")
+                f.write(f"End Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"LLM Call Duration: {duration_seconds:.2f} seconds\n")
                 f.write("\n=== STATUS ===\n")
                 f.write("Success: LLM call completed successfully\n")
             
@@ -1214,12 +1194,17 @@ class LLMClient:
             return response
             
         except Exception as e:
+            end_time = time.time()
+            duration_seconds = end_time - start_time
+            
             # Log the error
             try:
                 with open(debug_file, 'a', encoding='utf-8') as f:
                     f.write("=== ERROR ===\n")
                     f.write(f"Error: {str(e)}\n")
                     f.write(f"Error Type: {type(e).__name__}\n")
+                    f.write(f"End Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write(f"LLM Call Duration: {duration_seconds:.2f} seconds\n")
                     f.write("\n=== STATUS ===\n")
                     f.write(f"Failed: LLM call failed - {str(e)}\n")
             except:
@@ -1232,7 +1217,9 @@ class LLMClient:
         if self.provider != "openai":
             raise RuntimeError("Structured output is only supported for OpenAI models")
         
+        import time
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        start_time = time.time()
         
         # Create debug output directory if it doesn't exist
         debug_dir = "debug_output"
@@ -1245,7 +1232,7 @@ class LLMClient:
             # Log the request
             with open(debug_file, 'w', encoding='utf-8') as f:
                 f.write("=== LLM STRUCTURED CALL DEBUG LOG ===\n")
-                f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Start Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.write(f"Call Label: {call_label}\n")
                 f.write(f"Model: {self.model} (OpenAI Structured)\n")
                 f.write(f"Max Tokens: {max_tokens}\n")
@@ -1254,6 +1241,7 @@ class LLMClient:
                 f.write("\n=== PROMPT ===\n")
                 f.write(prompt)
                 f.write("\n\n")
+            
             # Make the structured API call
             response = self.client.responses.parse(
                 model=self.model,
@@ -1261,12 +1249,17 @@ class LLMClient:
                 text_format=response_format,
             )
 
+            end_time = time.time()
+            duration_seconds = end_time - start_time
             parsed_response = response.output_parsed
+            
             # Log the successful response
             with open(debug_file, 'a', encoding='utf-8') as f:
                 f.write("=== RESPONSE (RAW JSON) ===\n")
                 f.write(parsed_response.model_dump_json(indent=2))
                 f.write(f"\n\nResponse Length: {len(parsed_response.model_dump_json(indent=2))} characters\n")
+                f.write(f"End Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"LLM Call Duration: {duration_seconds:.2f} seconds\n")
                 f.write("\n=== STATUS ===\n")
                 f.write("Success: Structured LLM call completed successfully\n")
             
@@ -1274,12 +1267,17 @@ class LLMClient:
             return parsed_response
             
         except Exception as e:
+            end_time = time.time()
+            duration_seconds = end_time - start_time
+            
             # Log the error
             try:
                 with open(debug_file, 'a', encoding='utf-8') as f:
                     f.write("=== ERROR ===\n")
                     f.write(f"Error: {str(e)}\n")
                     f.write(f"Error Type: {type(e).__name__}\n")
+                    f.write(f"End Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write(f"LLM Call Duration: {duration_seconds:.2f} seconds\n")
                     f.write("\n=== STATUS ===\n")
                     f.write(f"Failed: Structured LLM call failed - {str(e)}\n")
             except:
@@ -1312,6 +1310,15 @@ class LLMClient:
             messages=[{"role": "user", "content": prompt}]
         )
         return message.content[0].text
+    
+    def load_prompt(self, filename: str) -> str:
+        """Load prompt template from prompts directory"""
+        prompt_path = os.path.join("prompts", filename)
+        try:
+            with open(prompt_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Prompt file not found: {prompt_path}")
 
 
 class FileProcessor:
@@ -1613,7 +1620,6 @@ class ChannelSegmenter:
             if i < len(chunks) - 1:  # 不是最后一个chunk
                 tail_summary = chunk.generate_tail_summary(
                     current_messages=current_messages,
-                    case_segmentation_result=case_results,
                     overlap_size=self.overlap,
                     llm_client=llm_client
                 )
@@ -1634,10 +1640,17 @@ class ChannelSegmenter:
                 continue
             
             # 执行merge
+            # 使用 tail summary (现在是字典)
+            prev_context = None
+            if i < len(tail_summaries) and tail_summaries[i]:
+                tail_data = tail_summaries[i]
+                if isinstance(tail_data, dict) and "active_case_hints" in tail_data:
+                    prev_context = {"ACTIVE_CASE_HINTS": tail_data["active_case_hints"]}
+            
             merge_result = merge_overlap(
                 cases_k=merged_cases[i],
                 cases_k1=merged_cases[i+1],
-                prev_context=self._parse_tail_summary_simple(tail_summaries[i]) if i < len(tail_summaries) else None,
+                prev_context=prev_context,
                 overlap_ids=overlap_ids
             )
             
@@ -1657,7 +1670,12 @@ class ChannelSegmenter:
         # Stage 3: 修复每个chunk
         repaired_cases = []
         for i, chunk in enumerate(chunks):
-            prev_context = self._parse_tail_summary_simple(tail_summaries[i-1]) if i > 0 and i-1 < len(tail_summaries) else None
+            # 使用 tail summary (现在是字典)
+            prev_context = None
+            if i > 0 and i-1 < len(tail_summaries) and tail_summaries[i-1]:
+                tail_data = tail_summaries[i-1]
+                if isinstance(tail_data, dict) and "active_case_hints" in tail_data:
+                    prev_context = {"ACTIVE_CASE_HINTS": tail_data["active_case_hints"]}
             
             repair_result = chunks[i].repair_case_segment_output(
                 cases=merged_cases[i],
@@ -1732,17 +1750,6 @@ class ChannelSegmenter:
         print(f"  Overlap: {len(overlap)} messages {sorted(list(overlap))[:10]}{'...' if len(overlap) > 10 else ''}")
         return overlap
     
-    def _parse_tail_summary_simple(self, tail_summary: str) -> Dict[str, Any]:
-        """简单解析tail summary"""
-        try:
-            import re
-            hints_match = re.search(r'ACTIVE_CASE_HINTS:\s*(.*?)(?=\n\n|\nRECENT_MESSAGES:|\Z)', 
-                                  tail_summary, re.DOTALL)
-            if hints_match:
-                return {"ACTIVE_CASE_HINTS": [{"text": hints_match.group(1)}]}
-        except Exception:
-            pass
-        return {}
     
     def _aggregate_channel_results(self, channel_results: List[Dict[str, Any]]) -> Dict[str, Any]:
         """聚合多个channel的结果"""
@@ -1768,6 +1775,88 @@ class ChannelSegmenter:
             "chunks_processed": total_chunks,
             "channels_processed": len(channel_results)
         }
+
+
+def test_case_segmentation(chunks: List[Chunk], llm_client: 'LLMClient', output_dir: str) -> Dict[str, Any]:
+    """Test case segmentation functionality on the first chunk"""
+    if not chunks:
+        print("No chunks available for case segmentation test")
+        return {}
+    
+    print(f"\n--- Test: Case Segmentation on First Chunk ---")
+    first_chunk = chunks[0]
+    print(f"Processing chunk {first_chunk.chunk_id} with {first_chunk.total_messages} messages...")
+    
+    # Format messages for case segmentation
+    current_messages = first_chunk.format_all_messages_for_prompt()
+    
+    # Generate case segments (no previous context for first chunk)
+    print("Generating case segments using LLM...")
+    case_results = first_chunk.generate_case_segments(
+        current_chunk_messages=current_messages,
+        previous_chunk_tail_summary=None,
+        llm_client=llm_client
+    )
+    
+    # Display results
+    complete_cases = case_results.get('complete_cases', [])
+    total_analyzed = case_results.get('total_messages_analyzed', 0)
+    
+    print(f"✅ Case segmentation complete!")
+    print(f"Found {len(complete_cases)} cases in {total_analyzed} messages")
+    
+    # Show case summary
+    for i, case in enumerate(complete_cases):
+        print(f"  Case {i+1}: {case.get('summary', 'No summary')[:100]}...")
+        print(f"    Status: {case.get('status', 'unknown')} | Active: {case.get('is_active_case', False)} | Messages: {len(case.get('msg_list', []))}")
+    
+    # Save results to JSON file
+    import json
+    output_file = os.path.join(output_dir, "test_case_segments.json")
+    with open(output_file, 'w', encoding='utf-8') as f:
+        json.dump(case_results, f, indent=2, ensure_ascii=False)
+    print(f"Case segmentation test results saved to: {output_file}")
+    
+    return case_results
+
+
+def test_tail_summary(chunks: List[Chunk], llm_client: 'LLMClient', output_dir: str, overlap_size: int) -> str:
+    """Test tail summary generation functionality on the first chunk"""
+    if not chunks:
+        print("No chunks available for tail summary test")
+        return ""
+    
+    print(f"\n--- Test: Tail Summary Generation on First Chunk ---")
+    first_chunk = chunks[0]
+    print(f"Processing chunk {first_chunk.chunk_id} with {first_chunk.total_messages} messages...")
+    
+    # Format messages
+    current_messages = first_chunk.format_all_messages_for_prompt()
+    
+    # Generate tail summary (no previous context for first chunk)
+    print("Generating tail summary using LLM...")
+    tail_summary = first_chunk.generate_tail_summary(
+        current_messages=current_messages,
+        overlap_size=overlap_size,
+        llm_client=llm_client
+    )
+    
+    # Save tail summary to file
+    tail_summary_file = os.path.join(output_dir, "test_tail_summary.txt")
+    with open(tail_summary_file, 'w', encoding='utf-8') as f:
+        import json
+        f.write(json.dumps(tail_summary, ensure_ascii=False, indent=2))
+    
+    print(f"✅ Tail summary generation complete!")
+    print(f"Summary active cases: {len(tail_summary.get('active_case_hints', []))}")
+    print(f"Tail summary test results saved to: {tail_summary_file}")
+    
+    # Show preview of first active case hint if available
+    if tail_summary.get('active_case_hints'):
+        first_hint = tail_summary['active_case_hints'][0]
+        print(f"First case: {first_hint.get('topic', 'N/A')} ({first_hint.get('status', 'N/A')})")
+    
+    return tail_summary
 
 
 def main() -> None:
@@ -1804,10 +1893,14 @@ def main() -> None:
     )
     # API keys are now automatically determined from environment variables based on model prefix
     parser.add_argument(
-        '--mode',
-        choices=['single-chunk', 'full-pipeline'],
-        default='full-pipeline',
-        help='Processing mode: single-chunk (original) or full-pipeline (with merge) (default: full-pipeline)'
+        '--test-case-segment',
+        action='store_true',
+        help='Test case segmentation on first chunk only'
+    )
+    parser.add_argument(
+        '--test-tail-summary',
+        action='store_true', 
+        help='Test tail summary generation on first chunk only'
     )
     
     args = parser.parse_args()
@@ -1831,69 +1924,17 @@ def main() -> None:
         llm_client = LLMClient(model=args.model)
         print(f"LLM Client initialized with model: {args.model}")
         
-        # Processing based on mode
-        if args.mode == 'single-chunk':
-            # Stage 4: Case Segmentation on First Chunk (Original Mode)
-            if chunks:
-                print(f"\n--- Stage 4: Case Segmentation on First Chunk ---")
-                first_chunk = chunks[0]
-                print(f"Processing chunk {first_chunk.chunk_id} with {first_chunk.total_messages} messages...")
-                
-                # Format messages for case segmentation
-                current_messages = first_chunk.format_all_messages_for_prompt()
-                
-                # Generate case segments (no previous context for first chunk)
-                print("Generating case segments using LLM...")
-                case_results = first_chunk.generate_case_segments(
-                    current_chunk_messages=current_messages,
-                    previous_chunk_tail_summary=None,
-                    llm_client=llm_client
-                )
-                
-                # Display results
-                complete_cases = case_results.get('complete_cases', [])
-                total_analyzed = case_results.get('total_messages_analyzed', 0)
-                
-                print(f"✅ Case segmentation complete!")
-                print(f"Found {len(complete_cases)} cases in {total_analyzed} messages")
-                
-                # Show case summary
-                for i, case in enumerate(complete_cases):
-                    print(f"  Case {i+1}: {case.get('summary', 'No summary')[:100]}...")
-                    print(f"    Status: {case.get('status', 'unknown')} | Active: {case.get('is_active_case', False)} | Messages: {len(case.get('msg_list', []))}")
-                
-                # Save results to JSON file
-                import json
-                output_file = os.path.join(args.output_dir, f"first_chunk_cases.json")
-                with open(output_file, 'w', encoding='utf-8') as f:
-                    json.dump(case_results, f, indent=2, ensure_ascii=False)
-                print(f"Case results saved to: {output_file}")
-                
-                # Stage 5: Generate Tail Summary for First Chunk
-                print(f"\n--- Stage 5: Tail Summary Generation for First Chunk ---")
-                print("Generating tail summary using case segmentation results...")
-                
-                tail_summary = first_chunk.generate_tail_summary(
-                    current_messages=current_messages,
-                    case_segmentation_result=case_results,
-                    overlap_size=args.overlap,
-                    llm_client=llm_client
-                )
-                
-                # Save tail summary to file
-                tail_summary_file = os.path.join(args.output_dir, "first_chunk_tail_summary.txt")
-                with open(tail_summary_file, 'w', encoding='utf-8') as f:
-                    f.write(tail_summary)
-                
-                print(f"✅ Tail summary generation complete!")
-                print(f"Summary length: {len(tail_summary)} characters")
-                print(f"Tail summary saved to: {tail_summary_file}")
-                print(f"Preview: {tail_summary[:200]}{'...' if len(tail_summary) > 200 else ''}")
-                
-            else:
-                print("No chunks available for case segmentation")
+        # Processing based on test flags
+        if args.test_case_segment:
+            # Test case segmentation functionality
+            test_case_segmentation(chunks, llm_client, args.output_dir)
         
-        elif args.mode == 'full-pipeline':
+        if args.test_tail_summary:
+            # Test tail summary functionality
+            test_tail_summary(chunks, llm_client, args.output_dir, args.overlap)
+        
+        if not args.test_case_segment and not args.test_tail_summary:
+            # Default: Full pipeline processing
             # Stage 4-N: Complete Multi-Chunk Processing with Merge
             print(f"\n--- Stage 4-N: Complete Multi-Chunk Processing with Merge ---")
             print(f"Processing all {len(chunks)} chunks with overlap merge...")
@@ -1968,10 +2009,6 @@ def main() -> None:
                 print(f"✅ Perfect coverage achieved!")
             else:
                 print(f"⚠️  Coverage incomplete - {len(df_annotated) - assigned_count} messages unassigned")
-        
-        else:
-            print(f"Unknown mode: {args.mode}")
-            exit(1)
         
         print(f"\n✅ Pipeline complete!")
         
