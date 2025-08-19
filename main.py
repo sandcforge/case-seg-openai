@@ -476,7 +476,7 @@ class Chunk:
 
     def generate_case_segments(self, 
                              current_chunk_messages: str, 
-                             previous_chunk_tail_summary: Optional[str], 
+                             previous_chunk_tail_summary: Optional[Dict[str, Any]], 
                              llm_client: 'LLMClient') -> Dict[str, Any]:
         """Generate case segments using LLM for current chunk messages"""
         # Load the segmentation prompt template
@@ -486,9 +486,21 @@ class Chunk:
             raise RuntimeError(f"Cannot load segmentation prompt: {e}")
         
         # Replace placeholders in prompt template
+        # Handle previous context (now dict format from generate_tail_summary)
+        if previous_chunk_tail_summary is None:
+            context_text = "No previous context"
+        else:
+            # Convert dict to JSON string format for prompt
+            import json
+            if isinstance(previous_chunk_tail_summary, dict):
+                context_text = json.dumps(previous_chunk_tail_summary, ensure_ascii=False, indent=2)
+            else:
+                # Backwards compatibility for string format
+                context_text = str(previous_chunk_tail_summary)
+        
         final_prompt = prompt_template.replace(
             "<<<INSERT_PREVIOUS_CONTEXT_SUMMARY_BLOCK_HERE>>>", 
-            "No previous context" if previous_chunk_tail_summary is None else previous_chunk_tail_summary
+            context_text
         ).replace(
             "<<<INSERT_CHUNK_BLOCK_HERE>>>", 
             current_chunk_messages
@@ -667,7 +679,7 @@ class Chunk:
                 })
         
         # 使用自己的消息ID列表
-        chunk_msg_ids = list(range(self.total_messages))
+        chunk_msg_ids = self.get_message_indices()
         
         out = copy.deepcopy(cases)
 
@@ -1272,32 +1284,25 @@ class ChannelSegmenter:
     def generate_chunks(self) -> List[Chunk]:
         """Generate chunks for single channel"""
         self.chunks = []
+        total_messages = len(self.df_clean)
+        
+        if total_messages == 0:
+            return self.chunks
         
         # Assume single channel input - get the channel URL
         channel_url = self.df_clean['Channel URL'].iloc[0] if len(self.df_clean) > 0 else "unknown"
         
-        # Generate chunks for this channel
-        channel_chunks = self.get_channel_chunks(self.df_clean, channel_url, 0)
-        self.chunks.extend(channel_chunks)
-        
-        print(f"Generated {len(self.chunks)} chunks for single channel")
-        return self.chunks
-    
-    def get_channel_chunks(self, channel_df: pd.DataFrame, channel_url: str, start_chunk_id: int) -> List[Chunk]:
-        """Generate chunks for a single channel using half-open intervals"""
-        channel_chunks = []
-        total_messages = len(channel_df)
-        
-        if total_messages == 0:
-            return channel_chunks
-        
         # Reset index to ensure continuous indexing within channel
-        channel_df = channel_df.reset_index(drop=True)
+        channel_df = self.df_clean.reset_index(drop=True)
         
-        chunk_id = start_chunk_id
-        i = 0
+        # Calculate number of chunks needed
+        import math
+        if self.overlap >= self.chunk_size:
+            num_chunks = math.ceil(total_messages / self.chunk_size)
+        else:
+            num_chunks = max(1, math.ceil((total_messages - self.overlap) / (self.chunk_size - self.overlap)))
         
-        while True:
+        for i in range(num_chunks):
             # Calculate chunk boundaries using half-open intervals
             if i == 0:
                 # First chunk: [0, chunk_size)
@@ -1312,15 +1317,11 @@ class ChannelSegmenter:
                 has_overlap_with_previous = True
                 overlap_size = min(self.overlap, start_idx)
             
-            # Break if we've reached the end
-            if start_idx >= total_messages:
-                break
-            
             # Create chunk with DataFrame slice
             chunk_messages = channel_df.iloc[start_idx:end_idx].copy()
             
             chunk = Chunk(
-                chunk_id=chunk_id,
+                chunk_id=i,
                 channel_url=channel_url,
                 start_idx=start_idx,
                 end_idx=end_idx,
@@ -1329,17 +1330,12 @@ class ChannelSegmenter:
                 overlap_size=overlap_size
             )
             
-            print(f"Generated chunk {chunk_id}: [{start_idx}, {end_idx}), "
+            print(f"Generated chunk {i}: [{start_idx}, {end_idx}), "
                   f"{len(chunk_messages)} messages, channel: {channel_url[:30]}...")
-            channel_chunks.append(chunk)
-            chunk_id += 1
-            i += 1
-            
-            # Break if this chunk reaches the end
-            if end_idx >= total_messages:
-                break
+            self.chunks.append(chunk)
         
-        return channel_chunks
+        print(f"Generated {len(self.chunks)} chunks for single channel")
+        return self.chunks
     
     def process_all_chunks_with_merge(self, llm_client: 'LLMClient') -> Dict[str, Any]:
         """
@@ -2105,16 +2101,23 @@ def save_channel_results(channel_result: Dict[str, Any], channel_url: str, chann
     
     for case in global_cases:
         case_id = case.get('global_case_id', -1)
-        for msg_idx in case.get('msg_list', []):
-            if 0 <= msg_idx < len(df_annotated):
-                if df_annotated.loc[msg_idx, 'case_id'] != -1:
-                    assignment_stats["conflicts"] += 1
-                    print(f"⚠️  Warning: Message {msg_idx} already assigned, reassigning to case {case_id}")
-                df_annotated.loc[msg_idx, 'case_id'] = case_id
-                assignment_stats["assigned"] += 1
-            else:
+        for msg_ch_idx in case.get('msg_list', []):
+            # Use msg_ch_idx column instead of DataFrame row index
+            mask = df_annotated['msg_ch_idx'] == msg_ch_idx
+            matching_rows = df_annotated[mask]
+            
+            if len(matching_rows) == 0:
                 assignment_stats["out_of_range"] += 1
-                print(f"⚠️  Warning: Message index {msg_idx} out of range (max: {len(df_annotated)-1})")
+                print(f"⚠️  Warning: Message msg_ch_idx {msg_ch_idx} not found in channel data")
+            else:
+                # Check for conflicts
+                if matching_rows['case_id'].iloc[0] != -1:
+                    assignment_stats["conflicts"] += 1
+                    print(f"⚠️  Warning: Message {msg_ch_idx} already assigned, reassigning to case {case_id}")
+                
+                # Assign case_id using msg_ch_idx-based selection
+                df_annotated.loc[mask, 'case_id'] = case_id
+                assignment_stats["assigned"] += 1
     
     # Save annotated CSV for this channel
     channel_segmented_file = os.path.join(output_dir, f"segmented_channel_{channel_idx + 1}.csv")
