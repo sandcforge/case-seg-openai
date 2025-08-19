@@ -175,6 +175,14 @@ class UnionFind:
 
 
 
+def format_channel_for_display(channel_url: str) -> str:
+    """
+    Format channel URL for display: show channel_ + last 5 characters
+    Example: sendbird_group_channel_215482988_b374305ff3e440674e786d63916f1d5aacda8249 -> channel_da8249
+    """
+    if len(channel_url) <= 5:
+        return channel_url
+    return f"channel_{channel_url[-5:]}"
 
 
 def validate_global_assignment(
@@ -1173,6 +1181,16 @@ class FileProcessor:
         self.df['msg_ch_idx'] = self.df.groupby('Channel URL').cumcount()
         print(f"Added msg_ch_idx column for {self.df['Channel URL'].nunique()} channels")
     
+    def filter_deleted_rows(self) -> None:
+        """Filter out rows where Deleted = True"""
+        if 'Deleted' in self.df.columns:
+            original_count = len(self.df)
+            self.df = self.df[self.df['Deleted'] != True].reset_index(drop=True)
+            filtered_count = original_count - len(self.df)
+            print(f"Filtered out {filtered_count} deleted rows ({len(self.df)} remaining)")
+        else:
+            print("No 'Deleted' column found, skipping deletion filter")
+    
     def create_clean_dataframe(self) -> pd.DataFrame:
         """Generate clean DataFrame with essential columns"""
         essential_columns = [
@@ -1206,6 +1224,7 @@ class FileProcessor:
             return []
             
         # Execute processing pipeline
+        self.filter_deleted_rows()
         self.add_role_column()
         self.process_time_columns()
         self.sort_and_group_data()
@@ -1230,7 +1249,7 @@ class FileProcessor:
                 "dataframe": channel_df
             })
             
-            print(f"  Channel: {channel_url[:50]}... - {len(channel_df)} messages")
+            print(f"  Channel: {format_channel_for_display(channel_url)} - {len(channel_df)} messages")
         
         return channel_data_list
 
@@ -1331,7 +1350,7 @@ class ChannelSegmenter:
             )
             
             print(f"Generated chunk {i}: [{start_idx}, {end_idx}), "
-                  f"{len(chunk_messages)} messages, channel: {channel_url[:30]}...")
+                  f"{len(chunk_messages)} messages, channel: {format_channel_for_display(channel_url)}")
             self.chunks.append(chunk)
         
         print(f"Generated {len(self.chunks)} chunks for single channel")
@@ -1490,7 +1509,7 @@ class ChannelSegmenter:
         total_unique_messages = len(channel_msg_indices)
         
         # Stage 5: 全局验证和修复
-        channel_short_name = chunks[0].channel_url[-20:] if chunks else "unknown"
+        channel_short_name = format_channel_for_display(chunks[0].channel_url) if chunks else "unknown"
         validation_report = self.validate_global_assignment(
             global_cases, 
             total_unique_messages, 
@@ -2293,7 +2312,7 @@ def main() -> None:
             channel_df = channel_data["dataframe"]
             
             print(f"\n=== Processing Channel {channel_idx + 1}/{len(channel_data_list)} ===")
-            print(f"Channel: {channel_url[:60]}...")
+            print(f"Channel: {format_channel_for_display(channel_url)}")
             print(f"Messages: {len(channel_df)}")
             
             # Stage 2: Channel Segmentation for this channel
