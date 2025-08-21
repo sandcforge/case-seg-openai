@@ -22,7 +22,7 @@ You are a senior conversation analyst. Create the **Previous Context Summary** f
       "shipping_state": "label_created|picked_up|in_transit|delivered|delayed|lost|N/A",
       "last_action": "e.g., 'refund issued', 'address updated'",
       "last_update": "ISO timestamp or N/A",
-      "pending_party": "seller|agent|buyer|carrier|platform|N/A",
+      "pending_party": "seller|platform|N/A",
       "amounts": {"credit_to_seller": "number or null", "refund_to_buyer": "number or null"},
       "returns_to_previous_topic": true,
       "possible_new_session": false,
@@ -39,7 +39,7 @@ You are a senior conversation analyst. Create the **Previous Context Summary** f
     "role_normalization": "map psops/support→agent, seller→seller, customer→buyer",
     "pronoun_resolution": "prefer most recent explicit entity for pronouns",
     "carrier_detection": "UPS starts 1Z; USPS starts 9; FedEx 12–14 digits",
-    "resolved_status_rule": "resolved only if no follow-up appears afterwards"
+    "resolved_status_rule": "resolved only if completely solved with no message reply needed"
   }
 }
 
@@ -48,6 +48,17 @@ You are a senior conversation analyst. Create the **Previous Context Summary** f
 - Use anchor priority: tracking_id > order_id > buyer_handle > topic.
 - Merge cases sharing the same tracking_id unless clearly different topics.
 - Do not invent entities/amounts. Fill last_update from the newest message in the case.
+
+### Pending Party Rules
+- **seller**: Seller is responsible for next action, even if they need to coordinate with carriers or buyers or other third parties.
+- **platform**: Platform is responsible for next action, even if they need to coordinate with engineering teams or buyers or other internal teams.
+- **N/A**: No specific party is waiting for action (case resolved or paused).
+
+### Status Rules
+- **open**: New case, waiting for initial response or processing.
+- **ongoing**: Active processing with continuous interaction between parties.
+- **blocked**: Temporarily blocked, waiting for specific conditions or third-party response.
+- **resolved**: Completely solved, no message reply needed.
 
 ----------------------------
 # INPUTS (fill these blocks before sending to the model)

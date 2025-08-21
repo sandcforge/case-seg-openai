@@ -48,9 +48,8 @@ class CaseItem(BaseModel):
     msg_list: List[int]
     summary: str
     status: str  # open | ongoing | resolved | blocked
-    pending_party: str  # seller | platform | N/A
+    pending_party: str  # seller|platform|N/A
     last_update: str  # ISO timestamp or N/A
-    is_active_case: bool
     confidence: float
 
 class CasesSegmentationResponse(BaseModel):
@@ -439,8 +438,8 @@ class Chunk:
             """智能挂靠逻辑（基于原_attach_unassigned_simple）"""
             scored = []
             for cid, c in enumerate(cases):
-                # 仅考虑 active 的或 open/ongoing/blocked 的
-                if not c.get("is_active_case", False) and c.get("status") == "resolved":
+                # 仅考虑 open/ongoing/blocked 的，跳过 resolved
+                if c.get("status") == "resolved":
                     continue
                 scored.append((
                     1 if self._hits_active_hints(c, prev_context) else 0,
@@ -609,7 +608,6 @@ class Chunk:
             "status": "ongoing",
             "pending_party": "N/A",
             "last_update": "N/A",
-            "is_active_case": False,
             "confidence": 0.0,
             "anchors": {}
         }
@@ -659,8 +657,6 @@ class Chunk:
         if c.get("status") not in ("open", "ongoing", "resolved", "blocked"):
             c["status"] = "ongoing"
 
-        # is_active_case 合法性
-        c["is_active_case"] = bool(c.get("is_active_case", False))
         return c
     
     def _anchor_strength(self, case: Dict[str, Any]) -> int:
@@ -1076,7 +1072,6 @@ class ChannelSegmenter:
         "status": "ongoing",            # 缺省设为 ongoing，便于保守承接
         "pending_party": "N/A",
         "last_update": "N/A",
-        "is_active_case": False,
         "confidence": 0.0,
         "anchors": {}
     }
@@ -1417,8 +1412,6 @@ class ChannelSegmenter:
         if c.get("status") not in ("open", "ongoing", "resolved", "blocked"):
             c["status"] = "ongoing"
 
-        # is_active_case 合法性
-        c["is_active_case"] = bool(c.get("is_active_case", False))
         return c
     
     def _anchor_strength(self, case: Dict[str, Any]) -> int:
@@ -1689,7 +1682,6 @@ class ChannelSegmenter:
                 "status": last_case.get("status", "N/A"),
                 "pending_party": last_case.get("pending_party", "N/A"),
                 "last_update": last_case.get("last_update", "N/A"),
-                "is_active_case": bool(last_case.get("is_active_case", False)),
                 "confidence": float(last_case.get("confidence", 0.0)),
                 "anchors": last_case.get("anchors", {})
             })
@@ -1868,7 +1860,6 @@ class ChannelSegmenter:
                 "status": "open",
                 "pending_party": "N/A",
                 "last_update": "N/A",
-                "is_active_case": False,
                 "confidence": 0.2,
                 "anchors": {}
             }
@@ -1997,7 +1988,7 @@ def test_case_segmentation(chunks: List[Chunk], llm_client: 'LLMClient', output_
     # Show case summary
     for i, case in enumerate(complete_cases):
         print(f"  Case {i+1}: {case.get('summary', 'No summary')[:100]}...")
-        print(f"    Status: {case.get('status', 'unknown')} | Active: {case.get('is_active_case', False)} | Messages: {len(case.get('msg_list', []))}")
+        print(f"    Status: {case.get('status', 'unknown')} | Messages: {len(case.get('msg_list', []))}")
     
     # Save results to JSON file
     import json

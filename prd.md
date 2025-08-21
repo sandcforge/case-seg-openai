@@ -152,7 +152,6 @@ segmented_channel_2.csv   # 频道2的带标注消息
             "status": "ongoing",
             "pending_party": "seller", 
             "last_update": "2025-01-15T10:30:00Z",
-            "is_active_case": true,
             "confidence": 0.9,
             "anchors": {
                 "tracking": ["ABC123"],

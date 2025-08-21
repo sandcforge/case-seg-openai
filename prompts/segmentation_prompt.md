@@ -52,12 +52,7 @@ A **case** is a coherent issue from start to finish (may span multiple messages)
 
 **Closure**
 
-* Mark `status="resolved"` only if fully closed with no follow-up needed.
-
-**Active Case Flag (`is_active_case`)**
-
-* `true` if status is `open`, `ongoing`, or `blocked`, or pending party/action remains.
-* `false` if closed with no further action.
+* Mark `status="resolved"` only if completely solved with no message reply needed.
 
 **No Hallucinations**
 
@@ -91,10 +86,9 @@ Return only:
     {
       "msg_list": [0,1,2,5],
       "summary": "Brief description of the issue, actions taken, and resolution status. Include: orders, buyer, topic, key actions, status, last_update (ISO), pending_party.",
-      "status": "open | ongoing | resolved | blocked",
-      "pending_party": "seller | platform | N/A",
+      "status": "open|ongoing|resolved|blocked",
+      "pending_party": "seller|platform|N/A",
       "last_update": "YYYY-MM-DDTHH:MM:SSZ or N/A",
-      "is_active_case": true,
       "confidence": 0.9
     }
   ],
@@ -109,5 +103,18 @@ Return only:
 * Sort `msg_list` ascending; no duplicates.
 * `summary` must be 1–3 sentences with orders, buyer, topic, actions, status, last update, pending party.
 * `confidence` ∈ \[0,1].
+
+**Pending Party Rules**
+
+* **seller**: Seller is responsible for next action, even if they need to coordinate with carriers or buyers or other third parties.
+* **platform**: Platform is responsible for next action, even if they need to coordinate with engineering teams or buyers or other internal teams.
+* **N/A**: No specific party is waiting for action (case resolved or paused).
+
+**Status Rules**
+
+* **open**: New case, waiting for initial response or processing.
+* **ongoing**: Active processing with continuous interaction between parties.
+* **blocked**: Temporarily blocked, waiting for specific conditions or third-party response.
+* **resolved**: Completely solved, no message reply needed.
 
 ---
