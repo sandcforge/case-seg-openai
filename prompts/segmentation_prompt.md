@@ -60,14 +60,6 @@ A **case** is a coherent issue from start to finish (may span multiple messages)
 
 ---
 
-### Use the following block (already prepared) to understand unresolved topics you should continue:
-
-```
-<<<INSERT_PREVIOUS_CONTEXT_SUMMARY_BLOCK_HERE>>>
-```
-
----
-
 ### Current Chunk Messages
 
 ```
@@ -89,7 +81,12 @@ Return only:
       "status": "open|ongoing|resolved|blocked",
       "pending_party": "seller|platform|N/A",
       "last_update": "YYYY-MM-DDTHH:MM:SSZ or N/A",
-      "confidence": 0.9
+      "confidence": 0.9,
+      "meta": {
+        "tracking_numbers": ["1Z123456789", "ABC123"],
+        "order_numbers": ["ORD-12345", "ORD-67890"],
+        "user_names": ["john_doe", "buyer123"]
+      }
     }
   ],
   "total_messages_analyzed": <int>
@@ -103,6 +100,10 @@ Return only:
 * Sort `msg_list` ascending; no duplicates.
 * `summary` must be 1–3 sentences with orders, buyer, topic, actions, status, last update, pending party.
 * `confidence` ∈ \[0,1].
+* `meta` contains business-relevant identifiers extracted from messages:
+  - `tracking_numbers`: Array of shipping tracking IDs (1Z*, 9*, FedEx numbers, etc.)
+  - `order_numbers`: Array of order/transaction IDs mentioned in the case
+  - `user_names`: Array of user handles/names mentioned in the case
 
 **Pending Party Rules**
 
