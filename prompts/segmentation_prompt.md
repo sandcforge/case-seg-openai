@@ -77,10 +77,9 @@ Return only:
   "complete_cases": [
     {
       "msg_list": [0,1,2,5],
-      "summary": "Brief description of the issue, actions taken, and resolution status. Include: orders, buyer, topic, key actions, status, last_update (ISO), pending_party.",
+      "summary": "Brief description of the issue, actions taken, and resolution or attemps.",
       "status": "open|ongoing|resolved|blocked",
       "pending_party": "seller|platform|N/A",
-      "last_update": "YYYY-MM-DDTHH:MM:SSZ or N/A",
       "confidence": 0.9,
       "meta": {
         "tracking_numbers": ["1Z123456789", "ABC123"],
@@ -88,8 +87,7 @@ Return only:
         "user_names": ["john_doe", "buyer123"]
       }
     }
-  ],
-  "total_messages_analyzed": <int>
+  ]
 }
 ```
 
@@ -98,7 +96,7 @@ Return only:
 * Include all cases in this chunk (any status).
 * Use only `msg_ch_idx` from this chunk (include overlap if applicable).
 * Sort `msg_list` ascending; no duplicates.
-* `summary` must be 1–3 sentences with orders, buyer, topic, actions, status, last update, pending party.
+* `summary` must be 1–3 sentences with orders, buyer, topic, actions, status, pending party.
 * `confidence` ∈ \[0,1].
 * `meta` contains business-relevant identifiers extracted from messages:
   - `tracking_numbers`: Array of shipping tracking IDs (1Z*, 9*, FedEx numbers, etc.)

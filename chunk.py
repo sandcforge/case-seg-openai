@@ -10,7 +10,6 @@ This module contains:
 import pandas as pd # type: ignore
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
-from datetime import datetime
 import copy
 from collections import defaultdict
 
@@ -42,7 +41,6 @@ class CaseItem:
     summary: str = "N/A"
     status: str = "ongoing"  # open | ongoing | resolved | blocked
     pending_party: str = "N/A"  # seller|platform|N/A
-    last_update: str = "N/A"  # ISO timestamp or N/A
     confidence: float = 0.0
     meta: Optional[MetaInfo] = None
     
@@ -59,7 +57,6 @@ class CaseItem:
             'summary': self.summary,
             'status': self.status,
             'pending_party': self.pending_party,
-            'last_update': self.last_update,
             'confidence': self.confidence,
             'meta': {
                 'tracking_numbers': self.meta.tracking_numbers,
@@ -78,7 +75,6 @@ class CaseItemForLLM(BaseModel):
     summary: str
     status: str  # open | ongoing | resolved | blocked
     pending_party: str  # seller|platform|N/A
-    last_update: str  # ISO timestamp or N/A
     confidence: float
     meta: MetaInfo
 
@@ -87,9 +83,6 @@ class CasesSegmentationResponseForLLM(BaseModel):
     model_config = {"extra": "forbid"}  # Ensures additionalProperties: false
     
     complete_cases: List[CaseItemForLLM]
-    total_messages_analyzed: int
-    llm_duration_seconds: Optional[float] = None
-
 
 # Case Review Models (LLM-compatible)
 class CaseReviewInput(BaseModel):
@@ -188,7 +181,6 @@ class Chunk:
                     'summary': case.summary,
                     'status': case.status,
                     'pending_party': case.pending_party,
-                    'last_update': case.last_update,
                     'confidence': case.confidence,
                     'meta': {
                         'tracking_numbers': case.meta.tracking_numbers,
@@ -218,10 +210,10 @@ class Chunk:
                 msg_indices = case_dict.get('msg_list', [])
                 if msg_indices:
                     # 从chunk的messages DataFrame中提取对应的行
-                    msg_dataframe = self.messages.iloc[msg_indices].copy().reset_index(drop=True)
+                    msg_dataframe = self.messages[self.messages['msg_ch_idx'].isin(msg_indices)].copy().reset_index(drop=True)
                 else:
                     # 如果没有消息，创建空的DataFrame，保持相同的列结构
-                    msg_dataframe = self.messages.iloc[0:0].copy()
+                    msg_dataframe = self.messages.iloc[0:0].copy()  # Use iloc for empty slice
                 
                 case_item = CaseItem(
                     case_id=idx,  # Assign case_id based on index
@@ -229,7 +221,6 @@ class Chunk:
                     summary=case_dict.get('summary', 'N/A'),
                     status=case_dict.get('status', 'ongoing'),
                     pending_party=case_dict.get('pending_party', 'N/A'),
-                    last_update=case_dict.get('last_update', 'N/A'),
                     confidence=case_dict.get('confidence', 0.0),
                     meta=meta_info
                 )
@@ -297,7 +288,6 @@ class Chunk:
                 "summary": "N/A",
                 "status": "ongoing",
                 "pending_party": "N/A",
-                "last_update": "N/A",
                 "confidence": 0.0,
                 "meta": {
                     "tracking_numbers": [],
@@ -353,16 +343,6 @@ class Chunk:
                     c["meta"][field] = []
                 elif not isinstance(c["meta"][field], list):
                     c["meta"][field] = []
-
-            # 规范 last_update（容错 ISO，不可解析则保留原值）
-            lu = c.get("last_update", "N/A")
-            if isinstance(lu, str) and lu not in ("", "N/A"):
-                try:
-                    # 尝试解析；再统一成 ISO 格式
-                    dt = datetime.fromisoformat(lu.replace("Z", "+00:00"))
-                    c["last_update"] = dt.isoformat().replace("+00:00","Z")
-                except Exception:
-                    pass
 
             # 置信度裁剪
             try:
@@ -427,18 +407,18 @@ class Chunk:
 
         def _is_empty_message(msg_idx: int) -> bool:
             """检查消息内容是否为空或空白"""
-            if msg_idx >= len(self.messages):
+            if msg_idx not in self.messages['msg_ch_idx'].values:
                 return True
-            message = self.messages.iloc[msg_idx]
-            text = str(message.get('Text', '')).strip()
+            message = self.messages[self.messages['msg_ch_idx'] == msg_idx].iloc[0]
+            text = str(message.get('Message', '')).strip()  # Use 'Message' column as seen in format_one_msg_for_prompt
             return len(text) == 0
         
         def _find_nearest_same_sender_case(msg_idx: int, cases: List[Dict]) -> Optional[int]:
             """查找包含最近的相同sender_id消息的case"""
-            if msg_idx >= len(self.messages):
+            if msg_idx not in self.messages['msg_ch_idx'].values:
                 return None
             
-            target_sender = self.messages.iloc[msg_idx].get('Sender ID', '')
+            target_sender = self.messages[self.messages['msg_ch_idx'] == msg_idx].iloc[0].get('Sender ID', '')
             if not target_sender:
                 return None
             
@@ -453,8 +433,8 @@ class Chunk:
             best_case_id = None
             
             for check_msg_idx, case_idx in msg_to_case.items():
-                if check_msg_idx < len(self.messages):
-                    check_sender = self.messages.iloc[check_msg_idx].get('Sender ID', '')
+                if check_msg_idx in self.messages['msg_ch_idx'].values:
+                    check_sender = self.messages[self.messages['msg_ch_idx'] == check_msg_idx].iloc[0].get('Sender ID', '')
                     if check_sender == target_sender:
                         distance = abs(check_msg_idx - msg_idx)
                         if distance < best_distance:
@@ -634,7 +614,7 @@ class Chunk:
             msg_indices = case_llm.msg_list
             if msg_indices:
                 # Extract corresponding rows from chunk's messages DataFrame
-                msg_dataframe = self.messages.iloc[msg_indices].copy().reset_index(drop=True)
+                msg_dataframe = self.messages[self.messages['msg_ch_idx'].isin(msg_indices)].copy().reset_index(drop=True)
             else:
                 # Empty DataFrame with same columns
                 msg_dataframe = self.messages.iloc[0:0].copy()
@@ -653,14 +633,11 @@ class Chunk:
                 summary=case_llm.summary,
                 status=case_llm.status,
                 pending_party=case_llm.pending_party,
-                last_update=case_llm.last_update,
                 confidence=case_llm.confidence,
                 meta=meta_internal
             )
             converted_cases.append(case_internal)
         
         return {
-            'complete_cases': [case.to_dict() for case in converted_cases],
-            'total_messages_analyzed': llm_response.total_messages_analyzed,
-            'llm_duration_seconds': llm_response.llm_duration_seconds
+            'complete_cases': [case.to_dict() for case in converted_cases]
         }
