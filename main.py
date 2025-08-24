@@ -236,6 +236,41 @@ class ChannelSegmenter:
         print(f"Executing merge pipeline for {len(chunks)} chunks")
         return []
 
+    def classify_all_cases(self, llm_client: 'LLMClient') -> None:
+        """Classify all cases across all chunks using LLM"""
+        total_cases = sum(len(chunk.cases) if chunk.has_segmentation_result and chunk.cases else 0 for chunk in self.chunks)
+        
+        if total_cases == 0:
+            print("No cases found to classify")
+            return
+        
+        print(f"\n=== Classifying {total_cases} cases across {len(self.chunks)} chunks ===")
+        
+        processed_cases = 0
+        
+        for chunk in self.chunks:
+            if not chunk.has_segmentation_result or not chunk.cases:
+                continue
+                
+            print(f"\n--- Classifying cases in chunk {chunk.chunk_id} ---")
+            
+            for case in chunk.cases:
+                processed_cases += 1
+                try:
+                    print(f"Classifying case {case.case_id} ({processed_cases}/{total_cases})...")
+                    
+                    # Classify the case (updates case object in-place and returns result)
+                    classification_result = case.classify_case(llm_client)
+                    
+                    print(f"  ✅ Classified as: {classification_result.main_category} > {classification_result.sub_category} "
+                          f"(confidence: {classification_result.confidence:.2f})")
+                    
+                except Exception as e:
+                    print(f"  ❌ Classification failed for case {case.case_id}: {str(e)}")
+                    # Keep default "unknown" values in case object
+        
+        print(f"✅ Classification complete: {processed_cases} cases processed")
+
     def validate_results(self) -> dict:
         """Validate segmentation results and prepare data for saving"""
         # Use channel URL from constructor
@@ -370,13 +405,27 @@ class ChannelSegmenter:
         # Generate annotated CSV for this channel
         df_annotated = self.df_clean.copy()
         df_annotated['case_id'] = "unassigned"  # Default: unassigned (string type)
+        # Add classification columns
+        df_annotated['main_category'] = "unknown"
+        df_annotated['sub_category'] = "unknown"
+        df_annotated['classification_reasoning'] = "N/A"
+        df_annotated['classification_confidence'] = 0.0
         
-        # Map case assignments using msg_ch_idx
+        # Map case assignments and classification data using msg_ch_idx
         for case_dict in global_cases:
             case_id = case_dict.get('case_id', "unknown")
+            main_category = case_dict.get('main_category', "unknown")
+            sub_category = case_dict.get('sub_category', "unknown")
+            reasoning = case_dict.get('classification_reasoning', "N/A")
+            confidence = case_dict.get('classification_confidence', 0.0)
+            
             for msg_ch_idx in case_dict.get('msg_index_list', []):
                 mask = df_annotated['msg_ch_idx'] == msg_ch_idx
                 df_annotated.loc[mask, 'case_id'] = case_id
+                df_annotated.loc[mask, 'main_category'] = main_category
+                df_annotated.loc[mask, 'sub_category'] = sub_category
+                df_annotated.loc[mask, 'classification_reasoning'] = reasoning
+                df_annotated.loc[mask, 'classification_confidence'] = confidence
         
         # Save annotated CSV for this channel
         channel_name = Utils.format_channel_for_display(self.channel_url)
@@ -433,6 +482,12 @@ def main() -> None:
         action='store_true',
         help='Enable LLM-based case review for regions between chunks'
     )
+    parser.add_argument(
+        '--enable-classification',
+        action='store_true',
+        default=True,
+        help='Enable LLM-based case classification for all cases (default: True)'
+    )
     
     args = parser.parse_args()
     
@@ -472,6 +527,10 @@ def main() -> None:
                 one_ch.segment_all_chunks_with_review(one_ch.chunks, llm_client)
             else:
                 one_ch.segment_all_chunks_simple(one_ch.chunks, llm_client)
+            
+            # Classify cases if enabled
+            if args.enable_classification:
+                one_ch.classify_all_cases(llm_client)
                 
             # Validate results
             one_ch.validate_results()

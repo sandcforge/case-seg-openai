@@ -10,10 +10,16 @@ This module contains:
 
 import pandas as pd  # type: ignore
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any, Literal
+from typing import List, Optional, Dict, Any, Literal, TYPE_CHECKING
 
 # Pydantic imports for LLM-compatible classes
 from pydantic import BaseModel, Field  # type: ignore
+
+# Import Utils for message formatting
+from utils import Utils
+
+if TYPE_CHECKING:
+    from llm_client import LLMClient
 
 
 # ----------------------------
@@ -39,6 +45,12 @@ class Case:
     pending_party: str = "N/A"  # seller|platform|N/A
     confidence: float = 0.0
     meta: Optional[MetaInfo] = None
+    # Classification fields
+    main_category: str = "unknown"  # 主分类
+    sub_category: str = "unknown"  # 子分类
+    classification_reasoning: str = "N/A"  # 分类理由
+    classification_confidence: float = 0.0  # 分类置信度
+    classification_indicators: List[str] = field(default_factory=list)  # 关键指标
     
     def __post_init__(self):
         """Initialize meta if not provided"""
@@ -55,19 +67,67 @@ class Case:
             'status': self.status,
             'pending_party': self.pending_party,
             'confidence': self.confidence,
+            'main_category': self.main_category,
+            'sub_category': self.sub_category,
+            'classification_reasoning': self.classification_reasoning,
+            'classification_confidence': self.classification_confidence,
+            'classification_indicators': self.classification_indicators,
             'meta': {
                 'tracking_numbers': self.meta.tracking_numbers,
                 'order_numbers': self.meta.order_numbers,
                 'user_names': self.meta.user_names
             } if self.meta else {}
         }
+    
+    def classify_case(self, llm_client: 'LLMClient') -> 'CaseClassificationLLMRes':
+        """Classify the case using LLM based on the messages DataFrame"""
+        if self.messages is None or self.messages.empty:
+            raise ValueError("Cannot classify case: no messages available")
+        
+        # Format all messages in this case using the Utils method
+        formatted_messages = []
+        for _, row in self.messages.iterrows():
+            formatted_messages.append(Utils.format_one_msg_for_prompt(row))
+        
+        messages_text = '\n'.join(formatted_messages)
+        
+        # Load the classification prompt template
+        try:
+            prompt_template = llm_client.load_prompt("case_classification_prompt.md")
+        except FileNotFoundError as e:
+            raise RuntimeError(f"Cannot load case classification prompt: {e}")
+        
+        # Replace placeholders in the template
+        classification_prompt = prompt_template.replace(
+            "<<<INSERT_CASE_SUMMARY>>>", self.summary
+        ).replace(
+            "<<<INSERT_CASE_STATUS>>>", self.status
+        ).replace(
+            "<<<INSERT_FORMATTED_MESSAGES>>>", messages_text
+        )
+
+        # Use structured output for classification
+        classification_response = llm_client.generate_structured(
+            classification_prompt,
+            CaseClassificationLLMRes,
+            call_label="case_classification"
+        )
+        
+        # Update case object fields in-place with classification results
+        self.main_category = classification_response.main_category
+        self.sub_category = classification_response.sub_category
+        self.classification_reasoning = classification_response.reasoning
+        self.classification_confidence = classification_response.confidence
+        self.classification_indicators = classification_response.key_indicators
+        
+        return classification_response
 
 
 # ----------------------------
 # LLM-Compatible Models
 # ----------------------------
 
-class CaseItemForLLM(BaseModel):
+class CaseSegmentationLLMRes(BaseModel):
     """LLM-compatible case structure using List[int] for msg_index_list"""
     model_config = {"extra": "forbid"}
     
@@ -79,11 +139,11 @@ class CaseItemForLLM(BaseModel):
     meta: MetaInfo
 
 
-class CasesSegmentationResponseForLLM(BaseModel):
+class CasesSegmentationListLLMRes(BaseModel):
     """LLM-compatible response structure for case segmentation"""
     model_config = {"extra": "forbid"}  # Ensures additionalProperties: false
     
-    complete_cases: List[CaseItemForLLM]
+    complete_cases: List[CaseSegmentationLLMRes]
 
 
 # ----------------------------
@@ -93,7 +153,7 @@ class CasesSegmentationResponseForLLM(BaseModel):
 class CaseReviewInput(BaseModel):
     """Input structure for case review"""
     model_config = {"extra": "forbid"}
-    cases: List[CaseItemForLLM] = Field(..., description="相关的cases列表")
+    cases: List[CaseSegmentationLLMRes] = Field(..., description="相关的cases列表")
     overlap_msg_ids: List[int] = Field(..., description="重叠区域的消息ID")
     all_messages: str = Field(..., description="所有相关消息的文本")
 
@@ -111,5 +171,19 @@ class CaseReviewResponse(BaseModel):
     """Response structure for case review"""
     model_config = {"extra": "forbid"}
     review_actions: List[ReviewAction] = Field(..., description="review操作列表")
-    updated_cases: List[CaseItemForLLM] = Field(..., description="更新后的cases")
+    updated_cases: List[CaseSegmentationLLMRes] = Field(..., description="更新后的cases")
     confidence: float = Field(..., description="review结果的置信度", ge=0.0, le=1.0)
+
+
+# ----------------------------
+# Case Classification Models
+# ----------------------------
+
+class CaseClassificationLLMRes(BaseModel):
+    """Response structure for case classification"""
+    model_config = {"extra": "forbid"}
+    main_category: str = Field(..., description="主分类 (Order, Shipment, Payment, Product, Account, Technical)")
+    sub_category: str = Field(..., description="子分类")
+    reasoning: str = Field(..., description="分类理由")
+    confidence: float = Field(..., description="分类置信度", ge=0.0, le=1.0)
+    key_indicators: List[str] = Field(..., description="关键指标词汇或短语")

@@ -18,3 +18,13 @@ class Utils:
         if len(channel_url) <= 5:
             return channel_url
         return f"channel_{channel_url[-5:]}"
+    
+    @staticmethod
+    def format_one_msg_for_prompt(row) -> str:
+        """Format a single message row as: msg_ch_idx | sender_id | role | timestamp | text"""
+        # Handle NaN messages and replace newlines with spaces to keep one line per message
+        message_text = str(row['Message']).replace('\n', ' ').replace('\r', ' ')
+        if message_text == 'nan':
+            message_text = ''
+        
+        return f"{row['msg_ch_idx']} | {row['Sender ID']} | {row['role']} | {row['Created Time']} | {message_text}"

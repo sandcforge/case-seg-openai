@@ -12,9 +12,10 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
 import copy
 from collections import defaultdict
+from utils import Utils
 
 # Import Case-related classes from the new case module
-from case import Case, MetaInfo, CasesSegmentationResponseForLLM
+from case import Case, MetaInfo, CasesSegmentationListLLMRes
 
 # Type checking imports to avoid circular dependencies
 if TYPE_CHECKING:
@@ -43,20 +44,12 @@ class Chunk:
         """Get list of msg_ch_idx values for messages in this chunk"""
         return self.chunk_df['msg_ch_idx'].tolist()
     
-    def format_one_msg_for_prompt(self, row) -> str:
-        """Format a single message row as: msg_ch_idx | sender_id | role | timestamp | text"""
-        # Handle NaN messages and replace newlines with spaces to keep one line per message
-        message_text = str(row['Message']).replace('\n', ' ').replace('\r', ' ')
-        if message_text == 'nan':
-            message_text = ''
-        
-        return f"{row['msg_ch_idx']} | {row['Sender ID']} | {row['role']} | {row['Created Time']} | {message_text}"
     
     def format_all_messages_for_prompt(self) -> str:
         """Format chunk messages as: message_index | sender id | role | timestamp | text"""
         formatted_lines = []
         for _, row in self.chunk_df.iterrows():
-            formatted_lines.append(self.format_one_msg_for_prompt(row))
+            formatted_lines.append(Utils.format_one_msg_for_prompt(row))
         return '\n'.join(formatted_lines)
     
 
@@ -78,11 +71,11 @@ class Chunk:
         # Generate case segments using LLM
         try:
             # Use structured output for OpenAI models, fallback to JSON parsing for Claude
-            if llm_client.provider == "openai" and CasesSegmentationResponseForLLM:
+            if llm_client.provider == "openai" and CasesSegmentationListLLMRes:
                 # Structured output with LLM-compatible schema (uses List[int] for msg_list)
                 structured_response = llm_client.generate_structured(
                     final_prompt, 
-                    CasesSegmentationResponseForLLM, 
+                    CasesSegmentationListLLMRes, 
                     call_label="case_segmentation"
                 )
                 
@@ -308,7 +301,7 @@ class Chunk:
             if msg_idx not in self.chunk_df['msg_ch_idx'].values:
                 return True
             message = self.chunk_df[self.chunk_df['msg_ch_idx'] == msg_idx].iloc[0]
-            text = str(message.get('Message', '')).strip()  # Use 'Message' column as seen in format_one_msg_for_prompt
+            text = str(message.get('Message', '')).strip()  # Use 'Message' column as seen in Utils.format_one_msg_for_prompt
             return len(text) == 0
         
         def _find_nearest_same_sender_case(msg_idx: int, cases: List[Dict]) -> Optional[int]:
