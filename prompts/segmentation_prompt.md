@@ -76,7 +76,7 @@ Return only:
 {
   "complete_cases": [
     {
-      "msg_list": [0,1,2,5],
+      "msg_index_list": [0,1,2,5],
       "summary": "Brief description of the issue, actions taken, and resolution or attemps.",
       "status": "open|ongoing|resolved|blocked",
       "pending_party": "seller|platform|N/A",
