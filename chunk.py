@@ -37,7 +37,7 @@ class MetaInfo:
 class CaseItem:
     """Individual case structure for case segmentation output"""
     case_id: Optional[int] = None  # Case ID (assigned during processing)
-    msg_list: pd.DataFrame = field(default_factory=pd.DataFrame)
+    msg_list: List[int] = field(default_factory=list)  # List of msg_ch_idx values
     summary: str = "N/A"
     status: str = "ongoing"  # open | ongoing | resolved | blocked
     pending_party: str = "N/A"  # seller|platform|N/A
@@ -49,11 +49,17 @@ class CaseItem:
         if self.meta is None:
             self.meta = MetaInfo()
     
+    def get_messages_dataframe(self, chunk_df: pd.DataFrame) -> pd.DataFrame:
+        """Get complete DataFrame for messages in this case"""
+        if not self.msg_list:
+            return chunk_df.iloc[0:0].copy()  # Empty DataFrame with same structure
+        return chunk_df[chunk_df['msg_ch_idx'].isin(self.msg_list)].copy().reset_index(drop=True)
+    
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
         return {
             'case_id': self.case_id,
-            'msg_list': self.msg_list.to_dict('records') if not self.msg_list.empty else [],
+            'msg_list': self.msg_list,  # Now just a list of integers
             'summary': self.summary,
             'status': self.status,
             'pending_party': self.pending_party,
@@ -117,18 +123,18 @@ class Chunk:
     """Data structure for a single chunk of messages"""
     chunk_id: int                    # Sequential chunk ID (0, 1, 2, ...)
     channel_url: str                 # Channel this chunk belongs to
-    messages: pd.DataFrame           # DataFrame slice with messages in this chunk
+    chunk_df: pd.DataFrame           # DataFrame slice with messages in this chunk
     has_segmentation_result: bool = False                    # Whether segmentation has been completed
     cases: List[CaseItem] = field(default_factory=list)  # Cached segmentation results
     
     @property
     def total_messages(self) -> int:
         """Number of messages in this chunk (calculated from DataFrame length)"""
-        return len(self.messages)
+        return len(self.chunk_df)
 
     def get_message_indices(self) -> List[int]:
         """Get list of msg_ch_idx values for messages in this chunk"""
-        return self.messages['msg_ch_idx'].tolist()
+        return self.chunk_df['msg_ch_idx'].tolist()
     
     def format_one_msg_for_prompt(self, row) -> str:
         """Format a single message row as: msg_ch_idx | sender_id | role | timestamp | text"""
@@ -142,7 +148,7 @@ class Chunk:
     def format_all_messages_for_prompt(self) -> str:
         """Format chunk messages as: message_index | sender id | role | timestamp | text"""
         formatted_lines = []
-        for _, row in self.messages.iterrows():
+        for _, row in self.chunk_df.iterrows():
             formatted_lines.append(self.format_one_msg_for_prompt(row))
         return '\n'.join(formatted_lines)
     
@@ -174,21 +180,7 @@ class Chunk:
                 )
                 
             # Convert LLM response to dict format that repair function expects
-            raw_cases = []
-            for case in structured_response.complete_cases:
-                case_dict = {
-                    'msg_list': case.msg_list,  # Keep as List[int] for repair function
-                    'summary': case.summary,
-                    'status': case.status,
-                    'pending_party': case.pending_party,
-                    'confidence': case.confidence,
-                    'meta': {
-                        'tracking_numbers': case.meta.tracking_numbers,
-                        'order_numbers': case.meta.order_numbers,
-                        'user_names': case.meta.user_names
-                    }
-                }
-                raw_cases.append(case_dict)
+            raw_cases = [case.model_dump() for case in structured_response.complete_cases]
                 
             repair_result = self.repair_case_segment_output(
                 cases=raw_cases,
@@ -206,18 +198,12 @@ class Chunk:
                     user_names=meta_dict.get('user_names', [])
                 )
                 
-                # 将索引列表转换为DataFrame
+                # 直接使用索引列表，不需要转换为DataFrame
                 msg_indices = case_dict.get('msg_list', [])
-                if msg_indices:
-                    # 从chunk的messages DataFrame中提取对应的行
-                    msg_dataframe = self.messages[self.messages['msg_ch_idx'].isin(msg_indices)].copy().reset_index(drop=True)
-                else:
-                    # 如果没有消息，创建空的DataFrame，保持相同的列结构
-                    msg_dataframe = self.messages.iloc[0:0].copy()  # Use iloc for empty slice
                 
                 case_item = CaseItem(
                     case_id=idx,  # Assign case_id based on index
-                    msg_list=msg_dataframe,
+                    msg_list=msg_indices,  # Now directly use the list of indices
                     summary=case_dict.get('summary', 'N/A'),
                     status=case_dict.get('status', 'ongoing'),
                     pending_party=case_dict.get('pending_party', 'N/A'),
@@ -407,18 +393,18 @@ class Chunk:
 
         def _is_empty_message(msg_idx: int) -> bool:
             """检查消息内容是否为空或空白"""
-            if msg_idx not in self.messages['msg_ch_idx'].values:
+            if msg_idx not in self.chunk_df['msg_ch_idx'].values:
                 return True
-            message = self.messages[self.messages['msg_ch_idx'] == msg_idx].iloc[0]
+            message = self.chunk_df[self.chunk_df['msg_ch_idx'] == msg_idx].iloc[0]
             text = str(message.get('Message', '')).strip()  # Use 'Message' column as seen in format_one_msg_for_prompt
             return len(text) == 0
         
         def _find_nearest_same_sender_case(msg_idx: int, cases: List[Dict]) -> Optional[int]:
             """查找包含最近的相同sender_id消息的case"""
-            if msg_idx not in self.messages['msg_ch_idx'].values:
+            if msg_idx not in self.chunk_df['msg_ch_idx'].values:
                 return None
             
-            target_sender = self.messages[self.messages['msg_ch_idx'] == msg_idx].iloc[0].get('Sender ID', '')
+            target_sender = self.chunk_df[self.chunk_df['msg_ch_idx'] == msg_idx].iloc[0].get('Sender ID', '')
             if not target_sender:
                 return None
             
@@ -433,8 +419,8 @@ class Chunk:
             best_case_id = None
             
             for check_msg_idx, case_idx in msg_to_case.items():
-                if check_msg_idx in self.messages['msg_ch_idx'].values:
-                    check_sender = self.messages[self.messages['msg_ch_idx'] == check_msg_idx].iloc[0].get('Sender ID', '')
+                if check_msg_idx in self.chunk_df['msg_ch_idx'].values:
+                    check_sender = self.chunk_df[self.chunk_df['msg_ch_idx'] == check_msg_idx].iloc[0].get('Sender ID', '')
                     if check_sender == target_sender:
                         distance = abs(check_msg_idx - msg_idx)
                         if distance < best_distance:
@@ -610,14 +596,8 @@ class Chunk:
         converted_cases = []
         
         for idx, case_llm in enumerate(llm_response.complete_cases):
-            # Convert List[int] back to DataFrame
+            # Keep List[int] as-is, no need to convert to DataFrame
             msg_indices = case_llm.msg_list
-            if msg_indices:
-                # Extract corresponding rows from chunk's messages DataFrame
-                msg_dataframe = self.messages[self.messages['msg_ch_idx'].isin(msg_indices)].copy().reset_index(drop=True)
-            else:
-                # Empty DataFrame with same columns
-                msg_dataframe = self.messages.iloc[0:0].copy()
             
             # Convert MetaInfo from Pydantic to dataclass
             meta_internal = MetaInfo(
@@ -626,10 +606,10 @@ class Chunk:
                 user_names=case_llm.meta.user_names
             )
             
-            # Create internal CaseItem with DataFrame
+            # Create internal CaseItem with index list
             case_internal = CaseItem(
                 case_id=case_llm.case_id if case_llm.case_id is not None else idx,
-                msg_list=msg_dataframe,
+                msg_list=msg_indices,  # Now directly use the list of indices
                 summary=case_llm.summary,
                 status=case_llm.status,
                 pending_party=case_llm.pending_party,

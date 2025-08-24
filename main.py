@@ -87,8 +87,9 @@ class ChannelSegmenter:
     ANCHOR_KEYS_STRICT = ("tracking", "order", "buyer", "topic")
     ANCHOR_KEYS_LAX = ("tracking", "order", "order_ids", "buyer", "buyers", "topic")
     
-    def __init__(self, df_clean: pd.DataFrame, chunk_size: int = 80, overlap: int = 20, review_gap_threshold: float = 0.05):
+    def __init__(self, df_clean: pd.DataFrame, channel_url: str, chunk_size: int = 80, overlap: int = 20, review_gap_threshold: float = 0.05):
         self.df_clean = df_clean
+        self.channel_url = channel_url
         self.chunk_size = chunk_size
         self.overlap = overlap
         self.review_gap_threshold = review_gap_threshold
@@ -103,14 +104,10 @@ class ChannelSegmenter:
     
     def generate_chunks(self) -> List[Chunk]:
         """Generate chunks for single channel"""
-        self.chunks = []
         total_messages = len(self.df_clean)
         
-        if total_messages == 0:
-            return self.chunks
-        
-        # Assume single channel input - get the channel URL
-        channel_url = self.df_clean['Channel URL'].iloc[0] if len(self.df_clean) > 0 else "unknown"
+        # Use the channel URL provided in constructor
+        channel_url = self.channel_url
         
         # Reset index to ensure continuous indexing within channel
         channel_df = self.df_clean.reset_index(drop=True)
@@ -130,7 +127,7 @@ class ChannelSegmenter:
             chunk = Chunk(
                 chunk_id=i,
                 channel_url=channel_url,
-                messages=chunk_messages
+                chunk_df=chunk_messages
             )
             
             msg_indices = chunk_messages['msg_ch_idx'].tolist()
@@ -204,12 +201,7 @@ class ChannelSegmenter:
             全局cases处理结果
         """
         print(f"\n=== Processing {len(chunks)} chunks with simple merge ===")
-        
-        chunk_cases = []
-        if chunks:
-            chunk_cases = self.segment_all_chunks(chunks, llm_client)
-        
-        return chunk_cases
+        return self.segment_all_chunks(chunks, llm_client)
     
 
     def execute_case_review(
@@ -244,12 +236,12 @@ class ChannelSegmenter:
         print(f"Executing merge pipeline for {len(chunks)} chunks")
         return []
 
-    def save_results(self, channel_idx: int, output_dir: str) -> None:
+    def save_results(self, output_dir: str) -> None:
         """Save individual channel results to separate files"""
         import json
         
-        # Get channel URL from df_clean
-        channel_url = self.df_clean['Channel URL'].iloc[0] if len(self.df_clean) > 0 else "unknown"
+        # Use channel URL from constructor
+        channel_url = self.channel_url
         
         # Collect all cases from chunks
         global_cases = []
@@ -260,21 +252,19 @@ class ChannelSegmenter:
             if chunk.has_segmentation_result and chunk.cases:
                 # Convert CaseItem objects to dictionaries for JSON serialization
                 for case in chunk.cases:
-                    case_dict = {
-                        "global_case_id": case.case_id,
-                        "case_summary": case.case_summary,
-                        "case_status": case.case_status,
-                        "meta": case.meta.model_dump() if case.meta else {},
-                        "msg_list": case.msg_list['msg_ch_idx'].tolist() if not case.msg_list.empty else []
-                    }
+                    case_dict = case.to_dict()
+                    # Create unique global case ID using chunk_id#case_id format
+                    case_dict["global_case_id"] = f"{chunk.chunk_id}#{case.case_id}"
                     global_cases.append(case_dict)
+                # Increment chunk counter once per chunk, not per case
                 chunks_processed += 1
         
-        print(f"\n--- Saving Channel {channel_idx + 1} Results ---")
+        print(f"\n--- Saving Channel Results ---")
         print(f"Found {len(global_cases)} cases across {total_analyzed} messages")
         
         # Save channel cases to JSON
-        channel_cases_file = os.path.join(output_dir, f"cases_channel_{channel_idx + 1}.json")
+        channel_name = Utils.format_channel_for_display(channel_url)
+        channel_cases_file = os.path.join(output_dir, f"cases_{channel_name}.json")
         save_result = {
             "channel_url": channel_url,
             "global_cases": global_cases,
@@ -282,19 +272,23 @@ class ChannelSegmenter:
             "chunks_processed": chunks_processed
         }
         
-        with open(channel_cases_file, 'w', encoding='utf-8') as f:
-            json.dump(save_result, f, indent=2, ensure_ascii=False)
-        print(f"Channel cases saved to: {channel_cases_file}")
+        try:
+            with open(channel_cases_file, 'w', encoding='utf-8') as f:
+                json.dump(save_result, f, indent=2, ensure_ascii=False)
+            print(f"Channel cases saved to: {channel_cases_file}")
+        except IOError as e:
+            print(f"❌ Error saving JSON file: {e}")
+            raise
         
         # Generate annotated CSV for this channel
         df_annotated = self.df_clean.copy()
-        df_annotated['case_id'] = -1  # Default: unassigned
+        df_annotated['case_id'] = "unassigned"  # Default: unassigned (string type)
         
         # Map case assignments using channel's local msg_ch_idx
-        assignment_stats = {"assigned": 0, "out_of_range": 0, "conflicts": 0}
+        assignment_stats = {"out_of_range": 0, "conflicts": 0}
         
         for case in global_cases:
-            case_id = case.get('global_case_id', -1)
+            case_id = case.get('global_case_id', "unknown")
             for msg_ch_idx in case.get('msg_list', []):
                 # Use msg_ch_idx column instead of DataFrame row index
                 mask = df_annotated['msg_ch_idx'] == msg_ch_idx
@@ -305,36 +299,46 @@ class ChannelSegmenter:
                     print(f"⚠️  Warning: Message msg_ch_idx {msg_ch_idx} not found in channel data")
                 else:
                     # Check for conflicts
-                    if matching_rows['case_id'].iloc[0] != -1:
+                    if matching_rows['case_id'].iloc[0] != "unassigned":
                         assignment_stats["conflicts"] += 1
                         print(f"⚠️  Warning: Message {msg_ch_idx} already assigned, reassigning to case {case_id}")
                     
                     # Assign case_id using msg_ch_idx-based selection
                     df_annotated.loc[mask, 'case_id'] = case_id
-                    assignment_stats["assigned"] += 1
         
         # Save annotated CSV for this channel
-        channel_segmented_file = os.path.join(output_dir, f"segmented_channel_{channel_idx + 1}.csv")
-        df_annotated.to_csv(channel_segmented_file, index=False, encoding='utf-8')
-        print(f"Channel annotated CSV saved to: {channel_segmented_file}")
+        channel_segmented_file = os.path.join(output_dir, f"segmented_{channel_name}.csv")
+        try:
+            df_annotated.to_csv(channel_segmented_file, index=False, encoding='utf-8')
+            print(f"Channel annotated CSV saved to: {channel_segmented_file}")
+        except IOError as e:
+            print(f"❌ Error saving CSV file: {e}")
+            raise
         
         # Display assignment statistics for this channel
-        assigned_count = (df_annotated['case_id'] >= 0).sum()
+        assigned_count = (df_annotated['case_id'] != "unassigned").sum()
+        unassigned_count = (df_annotated['case_id'] == "unassigned").sum()
         coverage_rate = assigned_count / len(df_annotated) * 100 if len(df_annotated) > 0 else 0
         
-        print(f"📊 Channel {channel_idx + 1} Assignment Statistics:")
+        print(f"📊 Channel Assignment Statistics:")
         print(f"   Total messages: {len(df_annotated)}")
-        print(f"   Assigned: {assigned_count} ({coverage_rate:.1f}%)")
-        print(f"   Unassigned: {len(df_annotated) - assigned_count}")
+        print(f"   Assigned to cases: {assigned_count} ({coverage_rate:.1f}%)")
+        print(f"   Unassigned: {unassigned_count}")
+        print(f"   Cases generated: {len(global_cases)}")
+        print(f"   Chunks processed: {chunks_processed}")
+        
+        # Show warnings if any
         if assignment_stats["out_of_range"] > 0:
-            print(f"   Out of range: {assignment_stats['out_of_range']}")
+            print(f"   ⚠️  Messages not found: {assignment_stats['out_of_range']}")
         if assignment_stats["conflicts"] > 0:
-            print(f"   Conflicts resolved: {assignment_stats['conflicts']}")
+            print(f"   ⚠️  Conflicts resolved: {assignment_stats['conflicts']}")
         
         if coverage_rate == 100.0:
-            print(f"✅ Perfect coverage achieved for channel {channel_idx + 1}!")
+            print(f"✅ Perfect coverage achieved for channel!")
+        elif coverage_rate >= 95.0:
+            print(f"✅ Excellent coverage achieved for channel!")
         else:
-            print(f"⚠️  Coverage incomplete for channel {channel_idx + 1}")
+            print(f"⚠️  Coverage could be improved for channel")
 
 
 
@@ -454,10 +458,10 @@ def main() -> None:
             print(f"Messages: {len(channel_df)}")
             
             # Stage 2: Channel Segmentation for this channel
-            one_ch = ChannelSegmenter(channel_df, args.chunk_size, args.overlap)
-            chunks = one_ch.generate_chunks()
+            one_ch = ChannelSegmenter(channel_df, channel_url, args.chunk_size, args.overlap)
+            one_ch.generate_chunks()
             
-            print(f"Generated {len(chunks)} chunks with chunk_size={args.chunk_size}")
+            print(f"Generated {len(one_ch.chunks)} chunks with chunk_size={args.chunk_size}")
             
             # Process this channel with full pipeline and save results immediately
             if args.enable_review:
@@ -466,7 +470,7 @@ def main() -> None:
                 one_ch.segment_all_chunks_simple(one_ch.chunks, llm_client)
                 
             # Save this channel's results independently
-            one_ch.save_results(channel_idx, args.output_dir)
+            one_ch.save_results(args.output_dir)
         
         
         # Summary for all channels
