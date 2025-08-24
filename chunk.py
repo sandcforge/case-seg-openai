@@ -34,10 +34,11 @@ class MetaInfo:
     user_names: List[str] = field(default_factory=list)
 
 @dataclass
-class CaseItem:
+class Case:
     """Individual case structure for case segmentation output"""
     case_id: Optional[str] = None  # Case ID (assigned during processing)
-    msg_list: List[int] = field(default_factory=list)  # List of msg_ch_idx values
+    msg_index_list: List[int] = field(default_factory=list)  # List of msg_ch_idx values
+    messages: Optional['pd.DataFrame'] = None  # Related messages DataFrame
     summary: str = "N/A"
     status: str = "ongoing"  # open | ongoing | resolved | blocked
     pending_party: str = "N/A"  # seller|platform|N/A
@@ -51,15 +52,15 @@ class CaseItem:
     
     def get_messages_dataframe(self, chunk_df: pd.DataFrame) -> pd.DataFrame:
         """Get complete DataFrame for messages in this case"""
-        if not self.msg_list:
+        if not self.msg_index_list:
             return chunk_df.iloc[0:0].copy()  # Empty DataFrame with same structure
-        return chunk_df[chunk_df['msg_ch_idx'].isin(self.msg_list)].copy().reset_index(drop=True)
+        return chunk_df[chunk_df['msg_ch_idx'].isin(self.msg_index_list)].copy().reset_index(drop=True)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
         return {
             'case_id': self.case_id,
-            'msg_list': self.msg_list,  # Now just a list of integers
+            'msg_index_list': self.msg_index_list,  # Now just a list of integers
             'summary': self.summary,
             'status': self.status,
             'pending_party': self.pending_party,
@@ -76,7 +77,7 @@ class CaseItemForLLM(BaseModel):
     """LLM-compatible case structure using List[int] for msg_list"""
     model_config = {"extra": "forbid"}
     
-    msg_list: List[int]  # List of message indices instead of DataFrame
+    msg_index_list: List[int]  # List of message indices instead of DataFrame
     summary: str
     status: str  # open | ongoing | resolved | blocked
     pending_party: str  # seller|platform|N/A
@@ -124,7 +125,7 @@ class Chunk:
     channel_url: str                 # Channel this chunk belongs to
     chunk_df: pd.DataFrame           # DataFrame slice with messages in this chunk
     has_segmentation_result: bool = False                    # Whether segmentation has been completed
-    cases: List[CaseItem] = field(default_factory=list)  # Cached segmentation results
+    cases: List[Case] = field(default_factory=list)  # Cached segmentation results
     
     @property
     def total_messages(self) -> int:
@@ -186,7 +187,7 @@ class Chunk:
                 prev_context=None
             )
             
-            # 转换repair结果为CaseItem对象
+            # 转换repair结果为Case对象
             case_items = []
             for idx, case_dict in enumerate(repair_result['cases_out']):
                 # 确保meta字段格式正确
@@ -197,9 +198,9 @@ class Chunk:
                     user_names=meta_dict.get('user_names', [])
                 )
 
-                case_item = CaseItem(
+                case_item = Case(
                     case_id=f'{self.chunk_id}#{idx}',  # Assign global case_id directly
-                    msg_list=case_dict.get('msg_list', []),  # Now directly use the list of indices
+                    msg_index_list=case_dict.get('msg_index_list', []),  # Now directly use the list of indices
                     summary=case_dict.get('summary', 'N/A'),
                     status=case_dict.get('status', 'ongoing'),
                     pending_party=case_dict.get('pending_party', 'N/A'),
@@ -286,10 +287,10 @@ class Chunk:
                 "buyers": "user_names"
             }
             
-            if "msg_list" not in c or not isinstance(c["msg_list"], list):
-                c["msg_list"] = []
+            if "msg_index_list" not in c or not isinstance(c["msg_index_list"], list):
+                c["msg_index_list"] = []
             # 统一整型 + 升序去重
-            c["msg_list"] = sorted({int(x) for x in c["msg_list"]})
+            c["msg_index_list"] = sorted({int(x) for x in c["msg_index_list"]})
 
             for k, v in REQUIRED_FIELDS_DEFAULTS.items():
                 c.setdefault(k, copy.deepcopy(v))
@@ -365,9 +366,9 @@ class Chunk:
             return False
 
         def _proximity_score(i: int, case: Dict[str, Any]) -> float:
-            ml = case.get("msg_list", [])
+            ml = case.get("msg_index_list", [])
             if not ml: return 0.0
-            # msg_list is still indices at repair stage
+            # msg_index_list is still indices at repair stage
             dist = min(abs(i - m) for m in ml)
             return 1.0 / (1 + dist)  # 1, 0.5, 0.33, ...
 
@@ -407,7 +408,7 @@ class Chunk:
             # 构建消息到case的映射
             msg_to_case = {}
             for case_idx, case in enumerate(cases):
-                for msg_id in case.get('msg_list', []):
+                for msg_id in case.get('msg_index_list', []):
                     msg_to_case[msg_id] = case_idx
             
             # 寻找最近的相同sender消息
@@ -460,7 +461,7 @@ class Chunk:
             best_case_id = 0
             
             for case_idx, case in enumerate(cases):
-                for msg_id in case.get('msg_list', []):
+                for msg_id in case.get('msg_index_list', []):
                     distance = abs(msg_id - msg_idx)
                     if distance < best_distance:
                         best_distance = distance
@@ -471,8 +472,8 @@ class Chunk:
         def _attach_to_case(msg_idx: int, case_id: int, cases: List[Dict], provisionals: List[Dict], reason: str):
             """执行挂靠操作"""
             if case_id < len(cases):
-                cases[case_id]["msg_list"].append(msg_idx)
-                cases[case_id]["msg_list"] = sorted(set(cases[case_id]["msg_list"]))
+                cases[case_id]["msg_index_list"].append(msg_idx)
+                cases[case_id]["msg_index_list"] = sorted(set(cases[case_id]["msg_index_list"]))
                 provisionals.append({
                     "type": "auto_attach",
                     "msg_idx": msg_idx,
@@ -490,13 +491,13 @@ class Chunk:
             out[idx] = _ensure_case_schema(out[idx])
 
         # 2) case 内排序稳定 + 去空 case
-        out = [c for c in out if c["msg_list"]]
-        out.sort(key=lambda c: (c["msg_list"][0], c.get("confidence", 0.0) * -1))
+        out = [c for c in out if c["msg_index_list"]]
+        out.sort(key=lambda c: (c["msg_index_list"][0], c.get("confidence", 0.0) * -1))
 
         # 3) 建立 msg -> cases 反查
         msg_to_cases = defaultdict(list)
         for cid, c in enumerate(out):
-            for i in c["msg_list"]:
+            for i in c["msg_index_list"]:
                 msg_to_cases[i].append(cid)
 
         provisionals = []
@@ -509,9 +510,9 @@ class Chunk:
             losers = [cid for cid in cids if cid != winner]
             # 从 loser 中移除该 msg
             for cid in losers:
-                ml = out[cid]["msg_list"]
+                ml = out[cid]["msg_index_list"]
                 if i in ml:
-                    out[cid]["msg_list"] = [x for x in ml if x != i]
+                    out[cid]["msg_index_list"] = [x for x in ml if x != i]
             provisionals.append({
                 "type": "duplicate_resolution",
                 "msg_idx": i,
@@ -521,11 +522,11 @@ class Chunk:
             })
 
         # 5) 再次清理空 case
-        out = [c for c in out if c["msg_list"]]
+        out = [c for c in out if c["msg_index_list"]]
         # 重新构建 msg 索引
         msg_to_cases.clear()
         for cid, c in enumerate(out):
-            for i in c["msg_list"]:
+            for i in c["msg_index_list"]:
                 msg_to_cases[i].append(cid)
 
         # 6) 识别未分配
@@ -559,13 +560,13 @@ class Chunk:
             _attach_to_case(i, cid, out, provisionals, reason)
 
         # 8) 最终排序稳定（按最小 msg 升序）
-        out.sort(key=lambda c: c["msg_list"][0])
+        out.sort(key=lambda c: c["msg_index_list"][0])
 
         # 9) 自检报告
         # 9.1 统计重复与覆盖率
         final_msg_to_cases = defaultdict(int)
         for c in out:
-            for i in c["msg_list"]:
+            for i in c["msg_index_list"]:
                 final_msg_to_cases[i] += 1
         duplicates_after = [i for i, cnt in final_msg_to_cases.items() if cnt > 1]
         covered = set(final_msg_to_cases.keys())

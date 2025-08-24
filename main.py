@@ -268,7 +268,7 @@ class ChannelSegmenter:
                     global_cases.append(case_dict)
                     
                     # Process messages directly from CaseItem object
-                    for msg_ch_idx in case.msg_list:
+                    for msg_ch_idx in case.msg_index_list:
                         # Use msg_ch_idx column instead of DataFrame row index
                         mask = df_annotated['msg_ch_idx'] == msg_ch_idx
                         matching_rows = df_annotated[mask]
@@ -374,7 +374,7 @@ class ChannelSegmenter:
         # Map case assignments using msg_ch_idx
         for case_dict in global_cases:
             case_id = case_dict.get('case_id', "unknown")
-            for msg_ch_idx in case_dict.get('msg_list', []):
+            for msg_ch_idx in case_dict.get('msg_index_list', []):
                 mask = df_annotated['msg_ch_idx'] == msg_ch_idx
                 df_annotated.loc[mask, 'case_id'] = case_id
         
