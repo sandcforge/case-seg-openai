@@ -236,49 +236,18 @@ class ChannelSegmenter:
         print(f"Executing merge pipeline for {len(chunks)} chunks")
         return []
 
-    def save_results(self, output_dir: str) -> None:
-        """Save individual channel results to separate files"""
-        import json
-        
+    def validate_results(self) -> dict:
+        """Validate segmentation results and prepare data for saving"""
         # Use channel URL from constructor
         channel_url = self.channel_url
         
-        # Collect all cases from chunks
-        global_cases = []
+        # Initialize counters and data structures
         total_analyzed = len(self.df_clean)
         chunks_processed = 0
+        cases_count = 0
+        global_cases = []  # Still need this for saving
         
-        for chunk in self.chunks:
-            if chunk.has_segmentation_result and chunk.cases:
-                # Convert CaseItem objects to dictionaries for JSON serialization
-                for case in chunk.cases:
-                    case_dict = case.to_dict()
-                    # Create unique global case ID using chunk_id#case_id format
-                    case_dict["global_case_id"] = f"{chunk.chunk_id}#{case.case_id}"
-                    global_cases.append(case_dict)
-                # Increment chunk counter once per chunk, not per case
-                chunks_processed += 1
-        
-        print(f"\n--- Saving Channel Results ---")
-        print(f"Found {len(global_cases)} cases across {total_analyzed} messages")
-        
-        # Save channel cases to JSON
-        channel_name = Utils.format_channel_for_display(channel_url)
-        channel_cases_file = os.path.join(output_dir, f"cases_{channel_name}.json")
-        save_result = {
-            "channel_url": channel_url,
-            "global_cases": global_cases,
-            "total_messages": total_analyzed,
-            "chunks_processed": chunks_processed
-        }
-        
-        try:
-            with open(channel_cases_file, 'w', encoding='utf-8') as f:
-                json.dump(save_result, f, indent=2, ensure_ascii=False)
-            print(f"Channel cases saved to: {channel_cases_file}")
-        except IOError as e:
-            print(f"❌ Error saving JSON file: {e}")
-            raise
+        print(f"\n--- Validating Channel Results ---")
         
         # Generate annotated CSV for this channel
         df_annotated = self.df_clean.copy()
@@ -287,33 +256,36 @@ class ChannelSegmenter:
         # Map case assignments using channel's local msg_ch_idx
         assignment_stats = {"out_of_range": 0, "conflicts": 0}
         
-        for case in global_cases:
-            case_id = case.get('global_case_id', "unknown")
-            for msg_ch_idx in case.get('msg_list', []):
-                # Use msg_ch_idx column instead of DataFrame row index
-                mask = df_annotated['msg_ch_idx'] == msg_ch_idx
-                matching_rows = df_annotated[mask]
+        # Direct 2-level loop: chunk -> case -> message
+        for chunk in self.chunks:
+            if chunk.has_segmentation_result and chunk.cases:
+                chunks_processed += 1
                 
-                if len(matching_rows) == 0:
-                    assignment_stats["out_of_range"] += 1
-                    print(f"⚠️  Warning: Message msg_ch_idx {msg_ch_idx} not found in channel data")
-                else:
-                    # Check for conflicts
-                    if matching_rows['case_id'].iloc[0] != "unassigned":
-                        assignment_stats["conflicts"] += 1
-                        print(f"⚠️  Warning: Message {msg_ch_idx} already assigned, reassigning to case {case_id}")
+                for case in chunk.cases:
+                    cases_count += 1
+                    # Convert to dict for saving (only when needed)
+                    case_dict = case.to_dict()
+                    global_cases.append(case_dict)
                     
-                    # Assign case_id using msg_ch_idx-based selection
-                    df_annotated.loc[mask, 'case_id'] = case_id
+                    # Process messages directly from CaseItem object
+                    for msg_ch_idx in case.msg_list:
+                        # Use msg_ch_idx column instead of DataFrame row index
+                        mask = df_annotated['msg_ch_idx'] == msg_ch_idx
+                        matching_rows = df_annotated[mask]
+                        
+                        if len(matching_rows) == 0:
+                            assignment_stats["out_of_range"] += 1
+                            print(f"⚠️  Warning: Message msg_ch_idx {msg_ch_idx} not found in channel data")
+                        else:
+                            # Check for conflicts
+                            if matching_rows['case_id'].iloc[0] != "unassigned":
+                                assignment_stats["conflicts"] += 1
+                                print(f"⚠️  Warning: Message {msg_ch_idx} already assigned, reassigning to case {case.case_id}")
+                            
+                            # Assign case_id using msg_ch_idx-based selection
+                            df_annotated.loc[mask, 'case_id'] = case.case_id
         
-        # Save annotated CSV for this channel
-        channel_segmented_file = os.path.join(output_dir, f"segmented_{channel_name}.csv")
-        try:
-            df_annotated.to_csv(channel_segmented_file, index=False, encoding='utf-8')
-            print(f"Channel annotated CSV saved to: {channel_segmented_file}")
-        except IOError as e:
-            print(f"❌ Error saving CSV file: {e}")
-            raise
+        print(f"Found {cases_count} cases across {total_analyzed} messages")
         
         # Display assignment statistics for this channel
         assigned_count = (df_annotated['case_id'] != "unassigned").sum()
@@ -324,7 +296,7 @@ class ChannelSegmenter:
         print(f"   Total messages: {len(df_annotated)}")
         print(f"   Assigned to cases: {assigned_count} ({coverage_rate:.1f}%)")
         print(f"   Unassigned: {unassigned_count}")
-        print(f"   Cases generated: {len(global_cases)}")
+        print(f"   Cases generated: {cases_count}")
         print(f"   Chunks processed: {chunks_processed}")
         
         # Show warnings if any
@@ -339,50 +311,82 @@ class ChannelSegmenter:
             print(f"✅ Excellent coverage achieved for channel!")
         else:
             print(f"⚠️  Coverage could be improved for channel")
+        
+        # Return validation report and processed data
+        return {
+            "channel_url": channel_url,
+            "global_cases": global_cases,
+            "total_messages": total_analyzed,
+            "chunks_processed": chunks_processed,
+            "df_annotated": df_annotated,
+            "assignment_stats": assignment_stats,
+            "coverage_rate": coverage_rate
+        }
 
-
-
-def test_case_segmentation(chunks: List[Chunk], llm_client: 'LLMClient', output_dir: str) -> Dict[str, Any]:
-    """Test case segmentation functionality on the first chunk"""
-    if not chunks:
-        print("No chunks available for case segmentation test")
-        return {}
+    def save_results_to_json(self, output_dir: str) -> None:
+        """Save channel cases to JSON file"""
+        import json
+        
+        # Collect cases directly from chunks 
+        global_cases = []
+        chunks_processed = 0
+        
+        for chunk in self.chunks:
+            if chunk.has_segmentation_result and chunk.cases:
+                chunks_processed += 1
+                for case in chunk.cases:
+                    case_dict = case.to_dict()
+                    global_cases.append(case_dict)
+        
+        # Save channel cases to JSON
+        channel_name = Utils.format_channel_for_display(self.channel_url)
+        channel_cases_file = os.path.join(output_dir, f"cases_{channel_name}.json")
+        save_result = {
+            "channel_url": self.channel_url,
+            "global_cases": global_cases,
+            "total_messages": len(self.df_clean),
+            "chunks_processed": chunks_processed
+        }
+        
+        try:
+            with open(channel_cases_file, 'w', encoding='utf-8') as f:
+                json.dump(save_result, f, indent=2, ensure_ascii=False)
+            print(f"Channel cases saved to: {channel_cases_file}")
+        except IOError as e:
+            print(f"❌ Error saving JSON file: {e}")
+            raise
     
-    print(f"\n--- Test: Case Segmentation on First Chunk ---")
-    first_chunk = chunks[0]
-    print(f"Processing chunk {first_chunk.chunk_id} with {first_chunk.total_messages} messages...")
-    
-    # Format messages for case segmentation
-    current_messages = first_chunk.format_all_messages_for_prompt()
-    
-    # Generate case segments (no previous context for first chunk)
-    print("Generating case segments using LLM...")
-    case_results = first_chunk.generate_case_segments(
-        current_chunk_messages=current_messages,
-        llm_client=llm_client
-    )
-    
-    # Display results
-    complete_cases = case_results.get('complete_cases', [])
-    total_analyzed = case_results.get('total_messages_analyzed', 0)
-    
-    print(f"✅ Case segmentation complete!")
-    print(f"Found {len(complete_cases)} cases in {total_analyzed} messages")
-    
-    # Show case summary
-    for i, case in enumerate(complete_cases):
-        print(f"  Case {i+1}: {case.get('summary', 'No summary')[:100]}...")
-        print(f"    Status: {case.get('status', 'unknown')} | Messages: {len(case.get('msg_list', []))}")
-    
-    # Save results to JSON file
-    import json
-    output_file = os.path.join(output_dir, "test_case_segments.json")
-    with open(output_file, 'w', encoding='utf-8') as f:
-        json.dump(case_results, f, indent=2, ensure_ascii=False)
-    print(f"Case segmentation test results saved to: {output_file}")
-    
-    return case_results
-
+    def save_results_to_csv(self, output_dir: str) -> None:
+        """Save annotated messages to CSV file"""
+        # Collect cases for message annotation
+        global_cases = []
+        
+        for chunk in self.chunks:
+            if chunk.has_segmentation_result and chunk.cases:
+                for case in chunk.cases:
+                    case_dict = case.to_dict()
+                    global_cases.append(case_dict)
+        
+        # Generate annotated CSV for this channel
+        df_annotated = self.df_clean.copy()
+        df_annotated['case_id'] = "unassigned"  # Default: unassigned (string type)
+        
+        # Map case assignments using msg_ch_idx
+        for case_dict in global_cases:
+            case_id = case_dict.get('case_id', "unknown")
+            for msg_ch_idx in case_dict.get('msg_list', []):
+                mask = df_annotated['msg_ch_idx'] == msg_ch_idx
+                df_annotated.loc[mask, 'case_id'] = case_id
+        
+        # Save annotated CSV for this channel
+        channel_name = Utils.format_channel_for_display(self.channel_url)
+        channel_segmented_file = os.path.join(output_dir, f"segmented_{channel_name}.csv")
+        try:
+            df_annotated.to_csv(channel_segmented_file, index=False, encoding='utf-8')
+            print(f"Channel annotated CSV saved to: {channel_segmented_file}")
+        except IOError as e:
+            print(f"❌ Error saving CSV file: {e}")
+            raise
 
 
 
@@ -469,8 +473,13 @@ def main() -> None:
             else:
                 one_ch.segment_all_chunks_simple(one_ch.chunks, llm_client)
                 
+            # Validate results
+            one_ch.validate_results()
+            
             # Save this channel's results independently
-            one_ch.save_results(args.output_dir)
+            print(f"\n--- Saving Channel Results ---")
+            one_ch.save_results_to_json(args.output_dir)
+            one_ch.save_results_to_csv(args.output_dir)
         
         
         # Summary for all channels

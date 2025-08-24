@@ -36,7 +36,7 @@ class MetaInfo:
 @dataclass
 class CaseItem:
     """Individual case structure for case segmentation output"""
-    case_id: Optional[int] = None  # Case ID (assigned during processing)
+    case_id: Optional[str] = None  # Case ID (assigned during processing)
     msg_list: List[int] = field(default_factory=list)  # List of msg_ch_idx values
     summary: str = "N/A"
     status: str = "ongoing"  # open | ongoing | resolved | blocked
@@ -76,7 +76,6 @@ class CaseItemForLLM(BaseModel):
     """LLM-compatible case structure using List[int] for msg_list"""
     model_config = {"extra": "forbid"}
     
-    case_id: Optional[int] = None  # Case ID (assigned during processing)
     msg_list: List[int]  # List of message indices instead of DataFrame
     summary: str
     status: str  # open | ongoing | resolved | blocked
@@ -197,13 +196,10 @@ class Chunk:
                     order_numbers=meta_dict.get('order_numbers', []),
                     user_names=meta_dict.get('user_names', [])
                 )
-                
-                # 直接使用索引列表，不需要转换为DataFrame
-                msg_indices = case_dict.get('msg_list', [])
-                
+
                 case_item = CaseItem(
-                    case_id=idx,  # Assign case_id based on index
-                    msg_list=msg_indices,  # Now directly use the list of indices
+                    case_id=f'{self.chunk_id}#{idx}',  # Assign global case_id directly
+                    msg_list=case_dict.get('msg_list', []),  # Now directly use the list of indices
                     summary=case_dict.get('summary', 'N/A'),
                     status=case_dict.get('status', 'ongoing'),
                     pending_party=case_dict.get('pending_party', 'N/A'),
@@ -589,35 +585,4 @@ class Chunk:
             "cases_out": out,
             "provisionals": provisionals,
             "report": report
-        }
-    
-    def convert_llm_response_to_internal(self, llm_response: 'CasesSegmentationResponseForLLM') -> Dict[str, Any]:
-        """Convert LLM-compatible response to internal format with DataFrames"""
-        converted_cases = []
-        
-        for idx, case_llm in enumerate(llm_response.complete_cases):
-            # Keep List[int] as-is, no need to convert to DataFrame
-            msg_indices = case_llm.msg_list
-            
-            # Convert MetaInfo from Pydantic to dataclass
-            meta_internal = MetaInfo(
-                tracking_numbers=case_llm.meta.tracking_numbers,
-                order_numbers=case_llm.meta.order_numbers,
-                user_names=case_llm.meta.user_names
-            )
-            
-            # Create internal CaseItem with index list
-            case_internal = CaseItem(
-                case_id=case_llm.case_id if case_llm.case_id is not None else idx,
-                msg_list=msg_indices,  # Now directly use the list of indices
-                summary=case_llm.summary,
-                status=case_llm.status,
-                pending_party=case_llm.pending_party,
-                confidence=case_llm.confidence,
-                meta=meta_internal
-            )
-            converted_cases.append(case_internal)
-        
-        return {
-            'complete_cases': [case.to_dict() for case in converted_cases]
         }
