@@ -18,6 +18,7 @@ import argparse
 import pandas as pd # type: ignore
 from dataclasses import dataclass
 from typing import List, Dict, Any
+from datetime import datetime
 from dotenv import load_dotenv # type: ignore
 
 # Local imports
@@ -87,9 +88,10 @@ class ChannelSegmenter:
     ANCHOR_KEYS_STRICT = ("tracking", "order", "buyer", "topic")
     ANCHOR_KEYS_LAX = ("tracking", "order", "order_ids", "buyer", "buyers", "topic")
     
-    def __init__(self, df_clean: pd.DataFrame, channel_url: str, chunk_size: int = 80, overlap: int = 20, review_gap_threshold: float = 0.05):
+    def __init__(self, df_clean: pd.DataFrame, channel_url: str, session_timestamp: str, chunk_size: int = 80, overlap: int = 20, review_gap_threshold: float = 0.05):
         self.df_clean = df_clean
         self.channel_url = channel_url
+        self.session_timestamp = session_timestamp
         self.chunk_size = chunk_size
         self.overlap = overlap
         self.review_gap_threshold = review_gap_threshold
@@ -373,9 +375,13 @@ class ChannelSegmenter:
                     case_dict = case.to_dict()
                     global_cases.append(case_dict)
         
-        # Save channel cases to JSON
+        # Create session folder for organized output
+        session_folder = os.path.join(output_dir, f"session_{self.session_timestamp}")
+        os.makedirs(session_folder, exist_ok=True)
+        
+        # Save channel cases to JSON in session folder
         channel_name = Utils.format_channel_for_display(self.channel_url)
-        channel_cases_file = os.path.join(output_dir, f"cases_{channel_name}.json")
+        channel_cases_file = os.path.join(session_folder, f"cases_{channel_name}.json")
         save_result = {
             "channel_url": self.channel_url,
             "global_cases": global_cases,
@@ -427,9 +433,13 @@ class ChannelSegmenter:
                 df_annotated.loc[mask, 'classification_reasoning'] = reasoning
                 df_annotated.loc[mask, 'classification_confidence'] = confidence
         
-        # Save annotated CSV for this channel
+        # Create session folder for organized output (same folder as JSON)
+        session_folder = os.path.join(output_dir, f"session_{self.session_timestamp}")
+        os.makedirs(session_folder, exist_ok=True)
+        
+        # Save annotated CSV for this channel in session folder
         channel_name = Utils.format_channel_for_display(self.channel_url)
-        channel_segmented_file = os.path.join(output_dir, f"segmented_{channel_name}.csv")
+        channel_segmented_file = os.path.join(session_folder, f"segmented_{channel_name}.csv")
         try:
             df_annotated.to_csv(channel_segmented_file, index=False, encoding='utf-8')
             print(f"Channel annotated CSV saved to: {channel_segmented_file}")
@@ -491,6 +501,10 @@ def main() -> None:
     
     args = parser.parse_args()
     
+    # Generate session timestamp for this entire pipeline run
+    session_timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
+    print(f"🚀 Starting pipeline session: {session_timestamp}")
+    
     try:
         # Stage 1: File Processing
         processor = FileProcessor(args.input, args.output_dir)
@@ -517,7 +531,7 @@ def main() -> None:
             print(f"Messages: {len(channel_df)}")
             
             # Stage 2: Channel Segmentation for this channel
-            one_ch = ChannelSegmenter(channel_df, channel_url, args.chunk_size, args.overlap)
+            one_ch = ChannelSegmenter(channel_df, channel_url, session_timestamp, args.chunk_size, args.overlap)
             one_ch.generate_chunks()
             
             print(f"Generated {len(one_ch.chunks)} chunks with chunk_size={args.chunk_size}")
@@ -543,9 +557,8 @@ def main() -> None:
         
         # Summary for all channels
         print(f"\n✅ All {len(channel_data_list)} channels processed successfully!")
-        print(f"Each channel's results saved to separate files:")
-        for i in range(len(channel_data_list)):
-            print(f"  Channel {i + 1}: cases_channel_{i + 1}.json, segmented_channel_{i + 1}.csv")
+        print(f"Results saved to timestamped session folders in output directory")
+        print(f"Each session contains JSON and CSV files for processed channels")
         
         print(f"\n✅ Pipeline complete!")
         

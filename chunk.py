@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
 import copy
 from collections import defaultdict
+from datetime import datetime
 from utils import Utils
 
 # Import Case-related classes from the new case module
@@ -73,10 +74,14 @@ class Chunk:
             # Use structured output for OpenAI models, fallback to JSON parsing for Claude
             if llm_client.provider == "openai" and CasesSegmentationListLLMRes:
                 # Structured output with LLM-compatible schema (uses List[int] for msg_list)
+                # Generate contextual call label with timestamp
+                channel_name = Utils.format_channel_for_display(self.channel_url)
+                call_label = f"case_segmentation_{channel_name}_chunk_{self.chunk_id}"
+                
                 structured_response = llm_client.generate_structured(
                     final_prompt, 
                     CasesSegmentationListLLMRes, 
-                    call_label="case_segmentation"
+                    call_label=call_label
                 )
                 
             # Convert LLM response to dict format that repair function expects

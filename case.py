@@ -11,6 +11,7 @@ This module contains:
 import pandas as pd  # type: ignore
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Literal, TYPE_CHECKING
+from datetime import datetime
 
 # Pydantic imports for LLM-compatible classes
 from pydantic import BaseModel, Field  # type: ignore
@@ -107,10 +108,12 @@ class Case:
         )
 
         # Use structured output for classification
+        call_label = f"case_classification_{self.case_id}"
+        
         classification_response = llm_client.generate_structured(
             classification_prompt,
             CaseClassificationLLMRes,
-            call_label="case_classification"
+            call_label=call_label
         )
         
         # Update case object fields in-place with classification results
