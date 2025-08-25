@@ -411,27 +411,21 @@ class ChannelSegmenter:
         # Generate annotated CSV for this channel
         df_annotated = self.df_clean.copy()
         df_annotated['case_id'] = "unassigned"  # Default: unassigned (string type)
-        # Add classification columns
+        # Add classification columns (only main_category and sub_category)
         df_annotated['main_category'] = "unknown"
         df_annotated['sub_category'] = "unknown"
-        df_annotated['classification_reasoning'] = "N/A"
-        df_annotated['classification_confidence'] = 0.0
         
         # Map case assignments and classification data using msg_ch_idx
         for case_dict in global_cases:
             case_id = case_dict.get('case_id', "unknown")
             main_category = case_dict.get('main_category', "unknown")
             sub_category = case_dict.get('sub_category', "unknown")
-            reasoning = case_dict.get('classification_reasoning', "N/A")
-            confidence = case_dict.get('classification_confidence', 0.0)
             
             for msg_ch_idx in case_dict.get('msg_index_list', []):
                 mask = df_annotated['msg_ch_idx'] == msg_ch_idx
                 df_annotated.loc[mask, 'case_id'] = case_id
                 df_annotated.loc[mask, 'main_category'] = main_category
                 df_annotated.loc[mask, 'sub_category'] = sub_category
-                df_annotated.loc[mask, 'classification_reasoning'] = reasoning
-                df_annotated.loc[mask, 'classification_confidence'] = confidence
         
         # Create session folder for organized output (same folder as JSON)
         session_folder = os.path.join(output_dir, f"session_{self.session_timestamp}")
