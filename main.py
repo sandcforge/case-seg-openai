@@ -121,38 +121,32 @@ def main() -> None:
             # Check if channel results already exist
             channel_name = Utils.format_channel_for_display(channel_url)
             channel_cases_file = os.path.join(session_folder, f"cases_{channel_name}.json")
-            if os.path.exists(channel_cases_file):
-                print(f"        ⏭️  Skipping - results already exist")
-                continue
             
             # Stage 2: Channel Segmentation for this channel
             one_ch = Channel(channel_df, channel_url, session, args.chunk_size, args.overlap)
-            one_ch.generate_chunks()
-            
-            print(f"        Generated {len(one_ch.chunks)} chunks (size={args.chunk_size})")
-            
-            # Process this channel with full pipeline and save results immediately
-            if args.enable_review:
-                one_ch.segment_all_chunks_with_review(one_ch.chunks, llm_client)
-            else:
-                one_ch.segment_all_chunks_simple(one_ch.chunks, llm_client)
 
-                
-            # Validate results
-            one_ch.validate_results()
+            if os.path.exists(channel_cases_file):
+                print(f"        ⏭️  Loading existing results from file")
+                # Load existing results using the new method
+                one_ch.build_cases_via_file(args.output_dir)
+
+            else:
             
-            # Save this channel's results independently with error protection
-            print(f"        💾 Saving results...")
-            try:
-                # Protected file save operations
-                one_ch.save_results_to_json(args.output_dir)
-                one_ch.save_results_to_csv(args.output_dir)
-                print(f"        ✅ Results saved successfully")
-                
-            except Exception as save_error:
-                print(f"        ❌ Error saving results: {str(save_error)}")
-                print(f"        Processing completed but save failed - continuing...")
-                # Continue processing other channels even if this one fails to save
+                # Process this channel with full pipeline and save results immediately
+                one_ch.build_global_cases(llm_client)
+                # Save this channel's results independently with error protection
+                print(f"        💾 Saving results...")
+                try:
+                    # Protected file save operations
+                    one_ch.save_results_to_json(args.output_dir)
+                    one_ch.save_results_to_csv(args.output_dir)
+                    print(f"        ✅ Results saved successfully")
+                    
+                except Exception as save_error:
+                    print(f"        ❌ Error saving results: {str(save_error)}")
+                    print(f"        Processing completed but save failed - continuing...")
+                    # Continue processing other channels even if this one fails to save
+            
         
         
         # Summary for all channels
