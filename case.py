@@ -52,6 +52,12 @@ class Case:
     classification_reasoning: str = "N/A"  # 分类理由
     classification_confidence: float = 0.0  # 分类置信度
     classification_indicators: List[str] = field(default_factory=list)  # 关键指标
+    # Performance metrics
+    first_res_time: int = -1  # Support response time in minutes, -1 if not processed
+    handle_time: int = -1  # Time between first and last message in minutes, -1 if not processed
+    first_contact_resolution: int = -1  # 1=resolved within 8h, 0=not, -1=not processed
+    usr_msg_num: int = -1  # Count of user messages, -1 if not processed
+    total_msg_num: int = -1  # Total count of messages, -1 if not processed
     
     def __post_init__(self):
         """Initialize meta if not provided"""
@@ -73,6 +79,11 @@ class Case:
             'classification_reasoning': self.classification_reasoning,
             'classification_confidence': self.classification_confidence,
             'classification_indicators': self.classification_indicators,
+            'first_res_time': self.first_res_time,
+            'handle_time': self.handle_time,
+            'first_contact_resolution': self.first_contact_resolution,
+            'usr_msg_num': self.usr_msg_num,
+            'total_msg_num': self.total_msg_num,
             'meta': {
                 'tracking_numbers': self.meta.tracking_numbers,
                 'order_numbers': self.meta.order_numbers,
@@ -124,6 +135,57 @@ class Case:
         self.classification_indicators = classification_response.key_indicators
         
         return classification_response
+    
+    def calculate_metrics(self) -> None:
+        """Calculate performance metrics based on messages DataFrame"""
+        if self.messages is None or self.messages.empty:
+            return  # Keep default -1 values
+        
+        # Sort messages by timestamp for chronological processing
+        df_sorted = self.messages.sort_values('Created Time')
+        
+        # Calculate message counts
+        self.usr_msg_num = len(df_sorted[df_sorted['role'] != 'customer_service'])
+        self.total_msg_num = len(df_sorted)
+        
+        # Validation: Warn if no support messages detected
+        if self.usr_msg_num == self.total_msg_num:
+            print(f"                        ⚠️  WARNING - Case {self.case_id}: No support messages detected ({self.total_msg_num} user messages)")
+        
+        # Calculate handle time (first to last message)
+        first_time = pd.to_datetime(df_sorted.iloc[0]['Created Time'])
+        last_time = pd.to_datetime(df_sorted.iloc[-1]['Created Time'])
+        self.handle_time = int((last_time - first_time).total_seconds() / 60)  # Convert to minutes
+
+        # Calculate first response time
+        if len(df_sorted) == 0:
+            return  # Keep -1
+        
+        first_message = df_sorted.iloc[0]
+        
+        # If support initiates conversation, keep -1
+        if first_message['role'] == 'customer_service':
+            # first_res_time remains -1
+            pass
+        else:
+            # First message is from user, find first support response
+            support_messages = df_sorted[df_sorted['role'] == 'customer_service']
+            
+            if len(support_messages) > 0:
+                # Found support response
+                first_user_time = pd.to_datetime(first_message['Created Time'])
+                first_support_time = pd.to_datetime(support_messages.iloc[0]['Created Time'])
+                self.first_res_time = int((first_support_time - first_user_time).total_seconds() / 60)  # Minutes
+            else:
+                # No support response, use handle_time
+                self.first_res_time = self.handle_time
+        
+        # Calculate first contact resolution
+        if self.status == "resolved" and self.handle_time != -1 and self.handle_time <= 480:  # 8 hours = 480 minutes
+            self.first_contact_resolution = 1
+        elif self.handle_time != -1:  # Processed but not resolved within 8h
+            self.first_contact_resolution = 0
+        # Otherwise keep -1 (not processed)
 
 
 # ----------------------------

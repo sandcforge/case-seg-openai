@@ -45,6 +45,17 @@ class LLMClient:
         else:
             raise ValueError(f"Cannot determine provider from model name: {model}. Supported prefixes: claude-, gpt-, gemini-")
     
+    def _get_indent_from_call_label(self, call_label: str) -> str:
+        """Determine indentation level based on call_label content"""
+        if "case_classification_" in call_label:
+            return "                        "  # 24 spaces (case level)
+        elif "chunk_" in call_label:
+            return "                "  # 16 spaces (chunk level)
+        elif "channel_" in call_label:
+            return "        "  # 8 spaces (channel level)
+        else:
+            return ""  # No indentation
+    
     def generate(self, prompt: str, call_label: str = "unknown", max_tokens: int = 12000) -> str:
         """Generate response using appropriate API with debug logging"""
         import time
@@ -90,7 +101,7 @@ class LLMClient:
                 f.write("\n=== STATUS ===\n")
                 f.write("Success: LLM call completed successfully\n")
             
-            print(f"Debug log saved: {debug_file}")
+            print(f"{self._get_indent_from_call_label(call_label)}Debug log saved: {debug_file}")
             return response
             
         except Exception as e:
@@ -163,7 +174,7 @@ class LLMClient:
                 f.write("\n=== STATUS ===\n")
                 f.write("Success: Structured LLM call completed successfully\n")
             
-            print(f"Debug log saved: {debug_file}")
+            print(f"{self._get_indent_from_call_label(call_label)}Debug log saved: {debug_file}")
             return parsed_response
             
         except Exception as e:

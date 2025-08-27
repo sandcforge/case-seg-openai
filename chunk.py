@@ -120,6 +120,10 @@ class Chunk:
                     confidence=case_dict.get('confidence', 0.0),
                     meta=meta_info
                 )
+                
+                # Calculate performance metrics
+                case_item.calculate_metrics()
+                
                 case_items.append(case_item)
             
             # 缓存结果
@@ -142,11 +146,9 @@ class Chunk:
             
             # 最终验证
             if report['missing_msgs'] == 0 and report['duplicates_after'] == 0:
-                print(f"✅ Chunk {self.chunk_id} repair completed: 100% coverage achieved")
-                print(f"   Final: {report['covered_msgs']}/{report['total_msgs']} messages in {report['total_cases_out']} cases")
+                print(f"                ✅ Chunk {self.chunk_id} repair completed: 100% coverage achieved - Final: {report['covered_msgs']}/{report['total_msgs']} messages in {report['total_cases_out']} cases")
             else:
-                print(f"⚠️ Chunk {self.chunk_id} repair incomplete:")
-                print(f"   Missing: {report['missing_msgs']}, Duplicates: {report['duplicates_after']}")
+                print(f"                ⚠️ Chunk {self.chunk_id} repair incomplete: Missing: {report['missing_msgs']}, Duplicates: {report['duplicates_after']}")
             
             # 返回JSON格式以保持兼容性
             return repair_result['cases_out']
