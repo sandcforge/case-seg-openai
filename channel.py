@@ -42,21 +42,24 @@ class Channel:
     ANCHOR_KEYS_STRICT = ("tracking", "order", "buyer", "topic")
     ANCHOR_KEYS_LAX = ("tracking", "order", "order_ids", "buyer", "buyers", "topic")
     
-    def __init__(self, df_clean: pd.DataFrame, channel_url: str, session: str, chunk_size: int = 80, overlap: int = 20, review_gap_threshold: float = 0.05):
+    def __init__(self, df_clean: pd.DataFrame, channel_url: str, session: str, chunk_size: int = 80, overlap: int = 20):
         self.df_clean = df_clean
         self.channel_url = channel_url
         self.session = session
         self.chunk_size = chunk_size
         self.overlap = overlap
-        self.review_gap_threshold = review_gap_threshold
         self.chunks: List[Chunk] = []
         
         self.validate_parameters()
     
     def validate_parameters(self) -> None:
-        """Validate chunk_size parameter"""
+        """Validate chunk_size and overlap parameters"""
         if self.chunk_size <= 0:
             raise ValueError("chunk_size must be positive")
+        if self.overlap < 0:
+            raise ValueError("overlap must be non-negative")
+        if self.overlap >= self.chunk_size / 4:
+            raise ValueError(f"overlap ({self.overlap}) must be < chunk_size/4 ({self.chunk_size/4:.1f})")
     
     @property
     def global_cases(self) -> List[Dict[str, Any]]:
@@ -79,15 +82,12 @@ class Channel:
         
         # Use the channel URL provided in constructor
         channel_url = self.channel_url
-        
-        # Reset index to ensure continuous indexing within channel
-        channel_df = self.df_clean.reset_index(drop=True)
-        
+                
         # Calculate number of chunks needed
         import math
         num_chunks = math.ceil(total_messages / self.chunk_size)
         
-        print(f"        Generated {num_chunks} chunks for single channel")
+        print(f"        Generating {num_chunks} chunks for single channel")
         
         for i in range(num_chunks):
             # Calculate chunk boundaries using half-open intervals
@@ -95,7 +95,7 @@ class Channel:
             end_idx = min((i + 1) * self.chunk_size, total_messages)
             
             # Create chunk with DataFrame slice
-            chunk_messages = channel_df.iloc[start_idx:end_idx].copy()
+            chunk_messages = self.df_clean.iloc[start_idx:end_idx].copy()
             
             chunk = Chunk(
                 chunk_id=i,

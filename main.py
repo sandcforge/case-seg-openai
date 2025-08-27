@@ -136,10 +136,7 @@ def main() -> None:
                 one_ch.segment_all_chunks_with_review(one_ch.chunks, llm_client)
             else:
                 one_ch.segment_all_chunks_simple(one_ch.chunks, llm_client)
-            
-            # Classify cases if enabled
-            if args.enable_classification:
-                one_ch.classify_all_cases(llm_client)
+
                 
             # Validate results
             one_ch.validate_results()
