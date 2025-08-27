@@ -133,7 +133,7 @@ def main() -> None:
             else:
             
                 # Process this channel with full pipeline and save results immediately
-                one_ch.build_global_cases(llm_client)
+                one_ch.build_cases_simple(llm_client)
                 # Save this channel's results independently with error protection
                 print(f"        💾 Saving results...")
                 try:
