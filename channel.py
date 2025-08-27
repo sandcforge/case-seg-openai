@@ -165,11 +165,15 @@ class Channel:
         # 2. 将字典转换为Case对象，并添加分类和指标
         case_objects = []
         for idx, case_dict in enumerate(repaired_case_dicts):
+            # Extract messages first using msg_index_list from dictionary
+            msg_index_list = case_dict['msg_index_list']
+            case_messages = self.df_clean[self.df_clean['msg_ch_idx'].isin(msg_index_list)].copy()
+            
             # Create Case object from dictionary
             case_obj = Case(
                 case_id=f'case_{idx:03d}',
-                msg_index_list=case_dict['msg_index_list'],
-                messages=self.df_clean[self.df_clean['msg_ch_idx'].isin(case_obj.msg_index_list)].copy(),
+                msg_index_list=msg_index_list,
+                messages=case_messages,
                 summary=case_dict['summary'],
                 status=case_dict['status'],
                 pending_party=case_dict['pending_party'],
