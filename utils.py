@@ -12,12 +12,12 @@ class Utils:
     @staticmethod
     def format_channel_for_display(channel_url: str) -> str:
         """
-        Format channel URL for display: show channel_ + last 5 characters
-        Example: sendbird_group_channel_215482988_b374305ff3e440674e786d63916f1d5aacda8249 -> channel_da8249
+        Format channel URL for display: extract hash part after last underscore
+        Example: sendbird_group_channel_215482988_b374305ff3e440674e786d63916f1d5aacda8249 -> b374305ff3e440674e786d63916f1d5aacda8249
         """
-        if len(channel_url) <= 5:
+        if '_' not in channel_url:
             return channel_url
-        return f"channel_{channel_url[-5:]}"
+        return channel_url.split('_')[-1]
     
     @staticmethod
     def format_one_msg_for_prompt(row) -> str:
