@@ -214,8 +214,6 @@ class Channel:
         """
         import json
         
-        print(f"    Loading cases from existing JSON file")
-        
         # 构建文件路径（与save_results_to_json相同的逻辑）
         session_folder = os.path.join(output_dir, f"session_{self.session}")
         channel_name = Utils.format_channel_for_display(self.channel_url)
@@ -232,7 +230,6 @@ class Channel:
             raise RuntimeError(f"Failed to load JSON file: {e}")
         
         global_cases_data = saved_data.get('global_cases', [])
-        print(f"        📂 Loaded {len(global_cases_data)} cases from file")
         
         # 将字典数据转换为Case对象（与build_global_cases完全相同的逻辑）
         case_objects = []
@@ -273,7 +270,7 @@ class Channel:
         
         self.cases = case_objects
         
-        print(f"    ✅ Cases loaded from file successfully ({len(self.cases)} Case objects)")
+        print(f"        ✅ Cases loaded from file successfully ({len(self.cases)} Case objects)")
         return self.cases
 
     def execute_case_review(
