@@ -26,6 +26,7 @@ from file_processor import FileProcessor
 from channel import Channel
 from llm_client import LLMClient
 from utils import Utils
+from stats import CaseStatistics, collect_all_cases_from_channels
 
 # Load environment variables
 load_dotenv()
@@ -104,7 +105,8 @@ def main() -> None:
         llm_client = LLMClient(model=args.model)
         print(f"LLM Client initialized with model: {args.model}")
         
-        # Process each channel separately
+        # Process each channel separately and collect them for statistics
+        channels = []  # Collect all Channel instances for statistics
         
         # Create session folder
         session_folder = os.path.join(args.output_dir, f"session_{session}")
@@ -145,6 +147,8 @@ def main() -> None:
                     print(f"        Processing completed but save failed - continuing...")
                     # Continue processing other channels even if this one fails to save
             
+            # Add this channel to our collection for statistics
+            channels.append(one_ch)
         
         
         # Summary for all channels
@@ -152,6 +156,33 @@ def main() -> None:
         print(f"Processed {len(channel_data_list)} channels")
         print(f"Results saved to timestamped session folders in output directory")
         print(f"Each session contains JSON and CSV files for successfully saved channels")
+        
+        # Stage 4: Generate comprehensive statistics across all channels
+        try:
+            print(f"\n📊 Generating comprehensive statistics...")
+            
+            # Collect all cases from all channels
+            all_cases = collect_all_cases_from_channels(channels)
+            
+            if all_cases:
+                # Calculate statistics
+                stats_calculator = CaseStatistics(all_cases)
+                stats_calculator.calculate_comprehensive_stats()
+                
+                # Print summary report to console
+                stats_calculator.print_summary_report()
+                
+                # Save detailed statistics to file
+                print(f"    💾 Saving statistics...")
+                stats_calculator.save_stats_to_file(args.output_dir, session)
+                print(f"    ✅ Statistics analysis complete")
+                
+            else:
+                print(f"    ⚠️  No cases found for statistical analysis")
+                
+        except Exception as stats_error:
+            print(f"    ❌ Error during statistics generation: {str(stats_error)}")
+            print(f"    Pipeline completed successfully, but statistics failed")
         
         print(f"\n✅ Pipeline complete!")
         
