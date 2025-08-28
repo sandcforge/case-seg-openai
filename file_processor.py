@@ -39,7 +39,7 @@ class FileProcessor:
         """Load CSV data into DataFrame"""
         try:
             self.df = pd.read_csv(self.input_file)
-            print(f"Loaded {len(self.df)} messages from {self.input_file}")
+            print(f"        Loaded {len(self.df)} messages from {self.input_file}")
             return True
         except Exception as e:
             print(f"Error loading file {self.input_file}: {e}")
@@ -51,7 +51,7 @@ class FileProcessor:
             self.df['role'] = self.df['Sender ID'].apply(
                 lambda x: 'customer_service' if str(x).startswith('psops') else 'user'
             )
-            print(f"Added role column: {self.df['role'].value_counts().to_dict()}")
+            print(f"        Added role column: {self.df['role'].value_counts().to_dict()}")
         else:
             print("Role column already exists, skipping...")
     
@@ -69,7 +69,7 @@ class FileProcessor:
                 return pd.NaT
         
         self.df['Created Time'] = self.df['Created Time'].apply(parse_to_utc)
-        print(f"Processed time columns, converted {len(self.df)} timestamps to UTC")
+        print(f"        Processed time columns, converted {len(self.df)} timestamps to UTC")
     
     def sort_and_group_data(self) -> None:
         """Sort data by Channel URL, Created Time, then Message ID"""
@@ -79,12 +79,12 @@ class FileProcessor:
             'Message ID'
         ]).reset_index(drop=True)
         
-        print(f"Sorted data by Channel URL, Created Time, and Message ID")
+        print(f"        Sorted data by Channel URL, Created Time, and Message ID")
     
     def add_message_index(self) -> None:
         """Add msg_ch_idx column (0..N-1 for each Channel URL group)"""
         self.df['msg_ch_idx'] = self.df.groupby('Channel URL').cumcount()
-        print(f"Added msg_ch_idx column for {self.df['Channel URL'].nunique()} channels")
+        print(f"        Added msg_ch_idx column for {self.df['Channel URL'].nunique()} channels")
     
     def filter_deleted_rows(self) -> None:
         """Filter out rows where Deleted = True"""
@@ -92,7 +92,7 @@ class FileProcessor:
             original_count = len(self.df)
             self.df = self.df[self.df['Deleted'] != True].reset_index(drop=True)
             filtered_count = original_count - len(self.df)
-            print(f"Filtered out {filtered_count} deleted rows ({len(self.df)} remaining)")
+            print(f"        Filtered out {filtered_count} deleted rows ({len(self.df)} remaining)")
         else:
             print("No 'Deleted' column found, skipping deletion filter")
     
@@ -106,7 +106,7 @@ class FileProcessor:
         available_columns = [col for col in essential_columns if col in self.df.columns]
         self.df_clean = self.df[available_columns].copy()
         
-        print(f"Created clean DataFrame with {len(available_columns)} columns: {available_columns}")
+        print(f"        Created clean DataFrame with {len(available_columns)} columns: {available_columns}")
         return self.df_clean
     
     def save_output(self) -> str:
@@ -136,7 +136,7 @@ class FileProcessor:
         self.add_message_index()
         self.create_clean_dataframe()
 
-        print(f"Processed {len(self.df_clean)} messages across {self.df_clean['Channel URL'].nunique()} channels")
+        print(f"        Processed {len(self.df_clean)} messages across {self.df_clean['Channel URL'].nunique()} channels")
         
         # Group by channel and create list of channel data
         channel_data_list = []
@@ -150,6 +150,6 @@ class FileProcessor:
                 "dataframe": channel_df
             })
             
-            print(f"  Channel: {Utils.format_channel_for_display(channel_url)} - {len(channel_df)} messages")
+            print(f"                Channel: {Utils.format_channel_for_display(channel_url)} - {len(channel_df)} messages")
         
         return channel_data_list

@@ -99,9 +99,7 @@ def main() -> None:
         if not channel_data_list:
             print("Error: File processing failed")
             exit(1)
-        
-        print(f"Found {len(channel_data_list)} channels to process")
-        
+                
         # Stage 3: Initialize LLM Client for case segmentation
         llm_client = LLMClient(model=args.model)
         print(f"LLM Client initialized with model: {args.model}")
@@ -135,12 +133,12 @@ def main() -> None:
                 # Process this channel with full pipeline and save results immediately
                 one_ch.build_cases_simple(llm_client)
                 # Save this channel's results independently with error protection
-                print(f"        💾 Saving results...")
+                print(f"    💾 Saving results...")
                 try:
                     # Protected file save operations
                     one_ch.save_results_to_json(args.output_dir)
                     one_ch.save_results_to_csv(args.output_dir)
-                    print(f"        ✅ Results saved successfully")
+                    print(f"    ✅ Results saved successfully")
                     
                 except Exception as save_error:
                     print(f"        ❌ Error saving results: {str(save_error)}")

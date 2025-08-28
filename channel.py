@@ -94,7 +94,7 @@ class Channel:
             # Create chunk DataFrame slice
             chunk_messages = self.df_clean.iloc[start_idx:end_idx].copy()
             
-            print(f"                Chunk {i+1}/{num_chunks}: Processing chunk {i}")
+            print(f"            Chunk {i+1}/{num_chunks}: Processing chunk {i}")
             
             # Format messages using static method
             current_messages = Chunk.format_messages_for_prompt(chunk_messages)
@@ -120,7 +120,7 @@ class Channel:
         )
         
         repaired_cases = repair_result['cases_out']
-        print(f"        ✅ Segmentation and repair complete ({len(repaired_cases)} repaired cases)")
+        print(f"    ✅ Segmentation and repair complete ({len(repaired_cases)} repaired cases)")
         return repaired_cases
     
     def segment_all_chunks_with_review(self, llm_client: 'LLMClient') -> List[Dict[str, Any]]:
@@ -147,7 +147,7 @@ class Channel:
     
     def build_cases_simple(self, llm_client: 'LLMClient') -> List[Case]:
         """
-        构建全局cases：调用segment_all_chunks获取修复后的cases，创建Case对象并分类
+        构建cases：直接对channel messages进行分割，创建Case对象并分类
         
         Args:
             llm_client: LLM客户端
@@ -155,12 +155,12 @@ class Channel:
         Returns:
             Case对象列表，包含分类和性能指标
         """
-        print(f"        Building global cases with Case objects")
+        print(f"    🔄 Segmenting channel messages directly")
         
-        # 1. 调用 segment_all_chunks 获取修复后的case字典
+        # 1. 直接对整个channel的消息进行分割
         repaired_case_dicts = self.segment_all_chunks(llm_client)
         
-        print(f"        🏗️  Creating Case objects with classification and metrics")
+        print(f"    🏗️  Creating Case objects with classification and metrics")
         
         # 2. 将字典转换为Case对象，并添加分类和指标
         case_objects = []
@@ -186,11 +186,11 @@ class Channel:
             )
                         
             # Perform classification using LLM
-            print(f"                📊 Classifying case {case_obj.case_id}")
+            print(f"        📊 Classifying case {case_obj.case_id}")
             try:
                 case_obj.classify_case(llm_client)
             except Exception as e:
-                print(f"                ⚠️  Classification failed for {case_obj.case_id}: {e}")
+                print(f"        ⚠️  Classification failed for {case_obj.case_id}: {e}")
             
             # Calculate performance metrics
             case_obj.calculate_metrics()
@@ -199,7 +199,7 @@ class Channel:
         
         self.cases = case_objects
         
-        print(f"        ✅ Global cases built successfully ({len(self.cases)} Case objects)")
+        print(f"    ✅ Cases built successfully ({len(self.cases)} Case objects)")
         return self.cases
     
     def build_cases_via_file(self, output_dir: str) -> List[Case]:
@@ -214,7 +214,7 @@ class Channel:
         """
         import json
         
-        print(f"        Loading cases from existing JSON file")
+        print(f"    Loading cases from existing JSON file")
         
         # 构建文件路径（与save_results_to_json相同的逻辑）
         session_folder = os.path.join(output_dir, f"session_{self.session}")
@@ -273,7 +273,7 @@ class Channel:
         
         self.cases = case_objects
         
-        print(f"        ✅ Cases loaded from file successfully ({len(self.cases)} Case objects)")
+        print(f"    ✅ Cases loaded from file successfully ({len(self.cases)} Case objects)")
         return self.cases
 
     def execute_case_review(
@@ -364,7 +364,7 @@ class Channel:
         try:
             with open(channel_cases_file, 'w', encoding='utf-8') as f:
                 json.dump(save_result, f, indent=2, ensure_ascii=False)
-            print(f"                Channel cases saved to: {channel_cases_file}")
+            print(f"            Channel cases saved to: {channel_cases_file}")
         except IOError as e:
             print(f"                ❌ Error saving JSON file: {e}")
             raise
@@ -399,7 +399,7 @@ class Channel:
         channel_segmented_file = os.path.join(session_folder, f"segmented_{channel_name}.csv")
         try:
             df_annotated.to_csv(channel_segmented_file, index=False, encoding='utf-8')
-            print(f"                Channel annotated CSV saved to: {channel_segmented_file}")
+            print(f"            Channel annotated CSV saved to: {channel_segmented_file}")
         except IOError as e:
             print(f"                ❌ Error saving CSV file: {e}")
             raise
@@ -747,14 +747,14 @@ class Channel:
 
         # 打印修复情况报告
         if provisionals:
-            print(f"🔧 Applied {len(provisionals)} repair actions:")
+            print(f"        🔧 Applied {len(provisionals)} repair actions:")
             for prov in provisionals:
                 if prov['type'] == 'duplicate_resolution':
-                    print(f"  ➜ Resolved duplicate msg {prov['msg_idx']}: kept in case {prov['chosen_case']}")
+                    print(f"            ➜ Resolved duplicate msg {prov['msg_idx']}: kept in case {prov['chosen_case']}")
                 elif prov['type'] == 'auto_attach':
-                    print(f"  ➕ Auto-attached msg {prov['msg_idx']} to case {prov['attached_to']}")
+                    print(f"            ➕ Auto-attached msg {prov['msg_idx']} to case {prov['attached_to']}")
                 elif prov['type'] == 'misc_bucket':
-                    print(f"  📦 Created misc case for {len(prov['msg_idxs'])} unassigned messages")
+                    print(f"            📦 Created misc case for {len(prov['msg_idxs'])} unassigned messages")
         
         # 打印最终验证结果
         if report['missing_msgs'] == 0 and report['duplicates_after'] == 0:
