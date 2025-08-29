@@ -11,8 +11,7 @@ This module contains the Channel class that handles:
 import os
 import pandas as pd  # type: ignore
 from typing import List, Dict, Any, TYPE_CHECKING, Optional
-from chunk import Chunk
-from case import Case, MetaInfo
+from case import Case, MetaInfo, CasesSegmentationListLLMRes
 from utils import Utils
 import copy
 from collections import defaultdict
@@ -96,18 +95,36 @@ class Channel:
             
             print(f"            Chunk {i+1}/{num_chunks}: Processing chunk {i}")
             
-            # Format messages using static method
-            current_messages = Chunk.format_messages_for_prompt(chunk_messages)
+            # Format messages using local helper method
+            current_messages = self._format_messages_for_prompt(chunk_messages)
             
-            # Get raw cases from LLM using static method (no repair, no case_id assignment)
-            chunk_raw_cases = Chunk.generate_case_segments(
-                chunk_id=i,
-                channel_url=self.channel_url,
-                current_chunk_messages=current_messages,
-                llm_client=llm_client
+            # Generate case segments using LLM for current chunk
+            try:
+                # Load the segmentation prompt template
+                prompt_template = llm_client.load_prompt("segmentation_prompt.md")
+            except FileNotFoundError as e:
+                raise RuntimeError(f"Cannot load segmentation prompt: {e}")
+            
+            final_prompt = prompt_template.replace(
+                "<<<INSERT_CHUNK_BLOCK_HERE>>>", 
+                current_messages
             )
             
-            raw_cases.extend(chunk_raw_cases)
+            # Generate case segments using LLM
+            try:
+                # Generate contextual call label with timestamp                
+                structured_response = llm_client.generate_structured(
+                    final_prompt, 
+                    CasesSegmentationListLLMRes, 
+                    call_label=f"case_segmentation_{Utils.format_channel_for_display(self.channel_url)}_chunk_{i}"
+                )
+                    
+                # Convert LLM response to dict format and add to raw cases
+                chunk_raw_cases = [case.model_dump() for case in structured_response.complete_cases]
+                raw_cases.extend(chunk_raw_cases)
+                
+            except Exception as e:
+                raise RuntimeError(f"Failed to generate case segments for chunk {i}: {e}")
         
         print(f"        ✅ LLM segmentation complete ({len(raw_cases)} raw cases collected)")
         
@@ -123,27 +140,6 @@ class Channel:
         print(f"    ✅ Segmentation and repair complete ({len(repaired_cases)} repaired cases)")
         return repaired_cases
     
-    def segment_all_chunks_with_review(self, llm_client: 'LLMClient') -> List[Dict[str, Any]]:
-        """
-        处理所有chunks并执行case review，返回扁平化的cases列表
-        
-        Args:
-            llm_client: LLM客户端
-            
-        Returns:
-            扁平化的case字典列表，包含所有chunks的cases
-        """
-        print(f"        Processing chunks with review")
-        
-        # Stage 1: 对所有chunks进行case segmentation
-        chunk_cases = self.segment_all_chunks(llm_client)
-        
-        # Stage 2: 执行case review (暂时直接返回原始结果)
-        print("        🔍 Performing case boundary review")
-        print("⚠️  Advanced case review not fully implemented yet")
-        print("   Using segmentation results directly")
-        
-        return chunk_cases
     
     def build_cases_simple(self, llm_client: 'LLMClient') -> List[Case]:
         """
@@ -273,73 +269,18 @@ class Channel:
         print(f"        ✅ Cases loaded from file successfully ({len(self.cases)} Case objects)")
         return self.cases
 
-    def execute_case_review(
-        self,
-        chunks: List[Chunk],
-        llm_client: 'LLMClient'
-    ) -> Dict[str, Any]:
-        """
-        执行case review（当前使用简化实现）
-        """
-        print("⚠️  Advanced case review not fully implemented yet")
-        print("   Using simple merge as fallback for now")
-        
-        # 暂时使用简单合并作为fallback
-        return self.execute_merge_pipeline(chunks)
-    
-    def execute_merge_pipeline(
-        self,
-        chunks: List[Chunk]
-    ) -> Dict[str, Any]:
-        """
-        执行merge pipeline的数据处理阶段（不包含LLM调用）
-        
-        Args:
-            chunk_cases: 每个chunk的case分割结果
-            tail_summaries: 每个chunk的tail summary
-            chunks: chunk列表
+    def _format_messages_for_prompt(self, chunk_df: pd.DataFrame) -> str:
+        """Format DataFrame messages for LLM prompt: message_index | sender id | role | timestamp | text"""
+        formatted_lines = []
+        for _, row in chunk_df.iterrows():
+            # Handle NaN messages and replace newlines with spaces to keep one line per message
+            message_text = str(row['Message']).replace('\n', ' ').replace('\r', ' ')
+            if message_text == 'nan':
+                message_text = ''
             
-        Returns:
-            包含global_cases
-        """
-        print(f"Executing merge pipeline for {len(chunks)} chunks")
-        return []
-
-    def classify_all_cases(self, llm_client: 'LLMClient') -> None:
-        """Classify all cases across all chunks using LLM"""
-        total_cases = sum(len(chunk.cases) if chunk.has_segmentation_result and chunk.cases else 0 for chunk in self.chunks)
-        
-        if total_cases == 0:
-            print("No cases found to classify")
-            return
-        
-        print(f"        🏷️  Classifying {total_cases} cases across {len(self.chunks)} chunks")
-        
-        processed_cases = 0
-        chunk_idx = 0
-        
-        for chunk in self.chunks:
-            if not chunk.has_segmentation_result or not chunk.cases:
-                continue
-            
-            chunk_idx += 1    
-            print(f"                Chunk {chunk_idx}: Classifying {len(chunk.cases)} cases")
-            
-            for case in chunk.cases:
-                processed_cases += 1
-                try:
-                    # Classify the case (updates case object in-place and returns result)
-                    classification_result = case.classify_case(llm_client)
-                    
-                    print(f"                        Case {processed_cases}/{total_cases}: {classification_result.main_category}>{classification_result.sub_category} "
-                          f"(conf: {classification_result.confidence:.2f})")
-                    
-                except Exception as e:
-                    print(f"                        Case {processed_cases}/{total_cases}: ❌ Classification failed - {str(e)}")
-                    # Keep default "unknown" values in case object
-        
-        print(f"        ✅ Classification complete ({processed_cases} cases processed)")
-
+            formatted_line = f"{row['msg_ch_idx']} | {row['Sender ID']} | {row['role']} | {row['Created Time']} | {message_text}"
+            formatted_lines.append(formatted_line)
+        return '\n'.join(formatted_lines)
 
     def save_results_to_json(self, output_dir: str) -> None:
         """Save channel cases to JSON file"""

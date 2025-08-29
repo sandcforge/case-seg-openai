@@ -57,11 +57,6 @@ def main() -> None:
     )
     # API keys are now automatically determined from environment variables based on model prefix
     parser.add_argument(
-        '--test-case-segment',
-        action='store_true',
-        help='Test case segmentation on first chunk only'
-    )
-    parser.add_argument(
         '--enable-review',
         action='store_true',
         help='Enable LLM-based case review for regions between chunks'

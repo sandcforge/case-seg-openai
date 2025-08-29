@@ -21,10 +21,11 @@ class Utils:
     
     @staticmethod
     def format_one_msg_for_prompt(row) -> str:
-        """Format a single message row as: msg_ch_idx | sender_id | role | timestamp | text"""
-        # Handle NaN messages and replace newlines with spaces to keep one line per message
+        """
+        Format single message row for LLM prompt: message_index | sender id | role | timestamp | text
+        Used for case classification in case.py
+        """
         message_text = str(row['Message']).replace('\n', ' ').replace('\r', ' ')
         if message_text == 'nan':
             message_text = ''
-        
         return f"{row['msg_ch_idx']} | {row['Sender ID']} | {row['role']} | {row['Created Time']} | {message_text}"
