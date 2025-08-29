@@ -339,6 +339,20 @@ class Session:
             for category, count in sub_category_counts.items()
         }
         
+        # Build hierarchical mapping
+        main_to_sub_mapping = {}
+        for case in all_cases:
+            main_cat = case.main_category
+            sub_cat = case.sub_category
+            
+            if main_cat not in main_to_sub_mapping:
+                main_to_sub_mapping[main_cat] = {}
+            
+            if sub_cat not in main_to_sub_mapping[main_cat]:
+                main_to_sub_mapping[main_cat][sub_cat] = 0
+            
+            main_to_sub_mapping[main_cat][sub_cat] += 1
+        
         return {
             "main_category": {
                 "counts": dict(main_category_counts),
@@ -349,7 +363,8 @@ class Session:
                 "counts": dict(sub_category_counts),
                 "percentages": sub_category_percentages,
                 "total_analyzed": len(sub_categories)
-            }
+            },
+            "hierarchical": main_to_sub_mapping
         }
     
     def _calculate_metrics_stats(self, all_cases: List) -> Dict[str, Any]:
@@ -456,9 +471,36 @@ class Session:
             count = main_cat["counts"][category]
             print(f"  {category}: {count} cases ({percentage:.1f}%)")
         
+        # Display hierarchical sub categories
+        print(f"\nHierarchical Category Breakdown:")
+        main_cat = stats_result["category_distribution"]["main_category"]
+        main_to_sub_mapping = stats_result["category_distribution"]["hierarchical"]
+        total_cases = stats_result["summary"]["total_cases"]
+        
+        # Sort main categories by count (descending)
+        sorted_main_cats = sorted(main_cat["counts"].items(), key=lambda x: x[1], reverse=True)
+        
+        for main_category, main_count in sorted_main_cats:
+            main_percentage = main_cat["percentages"][main_category]
+            print(f"  {main_category}: {main_count} cases ({main_percentage:.1f}%)")
+            
+            if main_category in main_to_sub_mapping:
+                # Sort sub categories by count (descending)
+                sorted_sub_cats = sorted(main_to_sub_mapping[main_category].items(), key=lambda x: x[1], reverse=True)
+                
+                for sub_category, sub_count in sorted_sub_cats:
+                    sub_percentage = (sub_count / total_cases) * 100
+                    print(f"    ├─ {sub_category}: {sub_count} cases ({sub_percentage:.1f}%)")
+        
         # Performance metrics
         print(f"\n⏱️  PERFORMANCE METRICS")
         print(f"-" * 30)
+        print(f"Metric Definitions:")
+        print(f"  • handle_time: Time between first and last message in minutes")
+        print(f"  • first_res_time: Support response time in minutes")
+        print(f"  • usr_msg_num: Count of user messages")
+        print(f"  (Value of -1 indicates not processed/invalid data)")
+        print()
         metrics = stats_result["performance_metrics"]
         
         for metric_name, data in metrics.items():
@@ -467,6 +509,8 @@ class Session:
                 print(f"  Valid Cases: {data['valid_cases']}/{data['total_cases']} ({data['validity_rate']:.1f}%)")
                 p = data["percentiles"]
                 print(f"  P5: {p['P5']}, P50: {p['P50']}, P95: {p['P95']}")
+                b = data["basic_stats"]
+                print(f"  Min: {b['min']}, Max: {b['max']}, Mean: {b['mean']}, Std: {b['std']}")
             else:
                 print(f"  No valid data available")
         
