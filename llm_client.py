@@ -10,6 +10,41 @@ import os
 import openai # type: ignore
 import anthropic # type: ignore
 from datetime import datetime
+from typing import List, Dict, Any, Optional
+from pydantic import BaseModel
+
+
+class VisionMetaInfo(BaseModel):
+    """Metadata extracted from vision analysis"""
+    tracking_ids: List[str] = []
+    order_ids: List[str] = []
+    buyer_handles: List[str] = []
+    visible_text: List[str] = []
+    has_damage: bool = False
+    damage_type: List[str] = []
+    damage_severity: str = "none"
+    plant_health_status: str = "unknown"
+    plant_symptoms: List[str] = []
+    plant_condition: str = "unknown" 
+    box_condition: str = "unknown"
+    protection_used: List[str] = []
+    labeling_status: str = "unknown"
+    carrier: str = "unknown"
+    delivery_status: str = "unknown"
+    address_visible: bool = False
+
+
+class VisionAnalysis(BaseModel):
+    """Vision analysis response structure"""
+    description: str
+    customer_intent: str
+    meta_info: VisionMetaInfo
+    confidence: float
+
+
+class VisionResponse(BaseModel):
+    """Complete vision response structure"""
+    visual_analysis: VisionAnalysis
 
 
 class LLMClient:
@@ -123,8 +158,8 @@ class LLMClient:
             
             raise RuntimeError(f"LLM generation failed ({call_label}): {e}")
     
-    def generate_structured(self, prompt: str, response_format, call_label: str = "unknown", max_tokens: int = 1200):
-        """Generate structured response using OpenAI with JSON schema"""
+    def generate_structured(self, prompt: str, response_format, call_label: str = "unknown", image_url: Optional[str] = None) -> Dict[str, Any]:
+        """Generate structured response using OpenAI responses.parse API, supports both text and vision"""
         if self.provider != "openai":
             raise RuntimeError("Structured output is only supported for OpenAI models")
         
@@ -141,41 +176,67 @@ class LLMClient:
         
         try:
             # Log the request
+            mode = "Vision" if image_url else "Text"
             with open(debug_file, 'w', encoding='utf-8') as f:
-                f.write("=== LLM STRUCTURED CALL DEBUG LOG ===\n")
+                f.write(f"=== LLM STRUCTURED CALL DEBUG LOG ({mode}) ===\n")
                 f.write(f"Start Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.write(f"Call Label: {call_label}\n")
-                f.write(f"Model: {self.model} (OpenAI Structured)\n")
-                f.write(f"Max Tokens: {max_tokens}\n")
+                f.write(f"Model: {self.model} (OpenAI Structured {mode})\n")
                 f.write(f"Response Format: {response_format.__name__}\n")
                 f.write(f"Prompt Length: {len(prompt)} characters\n")
+                if image_url:
+                    f.write(f"Image URL: {image_url}\n")
                 f.write("\n=== PROMPT ===\n")
                 f.write(prompt)
                 f.write("\n\n")
             
+            # Create content based on whether image is provided
+            if image_url:
+                # Multimodal content for vision analysis
+                content = [
+                    {
+                        "type": "input_text",
+                        "text": prompt
+                    },
+                    {
+                        "type": "input_image", 
+                        "image_url": image_url
+                    }
+                ]
+            else:
+                # Text-only content
+                content = prompt
+            
             # Make the structured API call
             response = self.client.responses.parse(
                 model=self.model,
-                input=[{"role": "user", "content": prompt}],
+                input=[{"role": "user", "content": content}],
                 text_format=response_format,
             )
+            
+            # Check if response and output_parsed are valid
+            if response is None or response.output_parsed is None:
+                raise RuntimeError("Responses.parse returned None or invalid output_parsed")
 
             end_time = time.time()
             duration_seconds = end_time - start_time
             parsed_response = response.output_parsed
             
+            # Convert to dict for consistent return format
+            response_dict = parsed_response.model_dump()
+            
             # Log the successful response
             with open(debug_file, 'a', encoding='utf-8') as f:
-                f.write("=== RESPONSE (RAW JSON) ===\n")
-                f.write(parsed_response.model_dump_json(indent=2))
-                f.write(f"\n\nResponse Length: {len(parsed_response.model_dump_json(indent=2))} characters\n")
+                f.write("=== RESPONSE (STRUCTURED) ===\n")
+                f.write(str(response_dict))
+                f.write(f"\n\nResponse Type: {type(response_dict).__name__}\n")
                 f.write(f"End Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"LLM Call Duration: {duration_seconds:.2f} seconds\n")
+                f.write(f"Structured LLM Call Duration: {duration_seconds:.2f} seconds\n")
                 f.write("\n=== STATUS ===\n")
                 f.write("Success: Structured LLM call completed successfully\n")
             
             print(f"{self._get_indent_from_call_label(call_label)}Debug log saved: {debug_file}")
-            return parsed_response
+            return response_dict
             
         except Exception as e:
             end_time = time.time()
