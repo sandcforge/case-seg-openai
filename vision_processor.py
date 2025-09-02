@@ -36,28 +36,26 @@ class VisionProcessor:
         self.llm_client = llm_client
         
     def get_context_for_image(self, 
-                             full_df: pd.DataFrame, 
+                             channel_df: pd.DataFrame, 
                              image_msg_ch_idx: int,
                              context_size: int = 5) -> pd.DataFrame:
         """
         Get context messages around an image message (MESG type only)
         
         Args:
-            full_df: Complete messages DataFrame (from df_clean)
-            image_msg_ch_idx: The msg_ch_idx of the image message
+            channel_df: DataFrame containing messages from a single channel
+            image_msg_ch_idx: The msg_ch_idx of the image message within this channel
             context_size: Number of MESG messages to take before and after (default 5)
             
         Returns:
             DataFrame containing context messages (MESG type + original image message), sorted by msg_ch_idx
         """
-        # Get the image message itself
-        image_msg = full_df[full_df['msg_ch_idx'] == image_msg_ch_idx]
+        # Find the image message in this channel
+        image_msg = channel_df[channel_df['msg_ch_idx'] == image_msg_ch_idx]
         if len(image_msg) == 0:
-            raise ValueError(f"Image message with msg_ch_idx {image_msg_ch_idx} not found")
+            raise ValueError(f"Image message with msg_ch_idx {image_msg_ch_idx} not found in channel")
         
-        # Filter to same channel's MESG type messages
-        channel_url = image_msg.iloc[0]['Channel URL']
-        channel_df = full_df[full_df['Channel URL'] == channel_url]
+        # Filter to MESG type messages only for context
         mesg_df = channel_df[channel_df['Type'] == 'MESG'].copy()
         
         # Find MESG messages before and after the image message
@@ -133,63 +131,22 @@ class VisionProcessor:
             
         except Exception as e:
             # Return default structure with error information
-            return self._create_error_response(str(e))
-        
-    def _create_error_response(self, error_message: str) -> Dict[str, Any]:
-        """
-        Create error response structure.
-        
-        Args:
-            error_message: Error description
-            
-        Returns:
-            Error response dictionary
-        """
-        return {
-            "visual_analysis": {
-                "description": f"Error analyzing image: {error_message}",
-                "customer_intent": "Unable to analyze due to error",
-                "meta_info": {
-                    # Anchors
-                    "tracking_ids": [],
-                    "order_ids": [],
-                    "buyer_handles": [],
-                    "visible_text": [],
-                    
-                    # Damage assessment
-                    "has_damage": False,
-                    "damage_type": [],
-                    "damage_severity": "none",
-                    
-                    # Plant condition
-                    "plant_health_status": "unknown",
-                    "plant_symptoms": [],
-                    "plant_condition": "unknown",
-                    
-                    # Packaging info
-                    "box_condition": "unknown",
-                    "protection_used": [],
-                    "labeling_status": "unknown",
-                    
-                    # Shipping evidence
-                    "carrier": "unknown",
-                    "delivery_status": "unknown",
-                    "address_visible": False
-                },
-                "confidence": 0.0
-            }
-        }
-    
-    def synthesize_visual_text(self, analysis: Dict[str, Any]) -> str:
+            return None
+
+    def synthesize_visual_text(self, analysis: Optional[Dict[str, Any]]) -> str:
         """
         Convert vision analysis to readable text for message replacement.
         
         Args:
-            analysis: Vision analysis dictionary
+            analysis: Vision analysis dictionary, or None if analysis failed
             
         Returns:
-            Synthesized text representation
+            Synthesized text representation or error message
         """
+        # Handle failed analysis
+        if analysis is None:
+            return "The user has uploaded a file but can not parse it."
+            
         visual_fact = analysis["visual_analysis"]
         
         # Start with the description
