@@ -19,6 +19,8 @@ from collections import defaultdict
 if TYPE_CHECKING:
     from llm_client import LLMClient
 
+from vision_processor import VisionProcessor
+
 
 class Channel:
     """
@@ -45,7 +47,7 @@ class Channel:
     ANCHOR_KEYS_LAX = ("tracking", "order", "order_ids", "buyer", "buyers", "topic")
     
     def __init__(self, df_clean: pd.DataFrame, channel_url: str, session: str, chunk_size: int = 80, overlap: int = 20):
-        self.df_clean = df_clean
+        self.df_clean = df_clean.copy()  # Make a copy to avoid modifying original
         self.channel_url = channel_url
         self.session = session
         self.chunk_size = chunk_size
@@ -119,8 +121,8 @@ class Channel:
                     call_label=f"case_segmentation_{Utils.format_channel_for_display(self.channel_url)}_chunk_{i}"
                 )
                     
-                # Convert LLM response to dict format and add to raw cases
-                chunk_raw_cases = [case.model_dump() for case in structured_response.complete_cases]
+                # structured_response is already a dict, extract complete_cases
+                chunk_raw_cases = structured_response['complete_cases']
                 raw_cases.extend(chunk_raw_cases)
                 
             except Exception as e:
@@ -705,3 +707,56 @@ class Channel:
             "provisionals": provisionals,
             "report": report
         }
+    
+    def process_file_type_messages(self, llm_client: 'LLMClient') -> None:
+        """Process FILE messages with vision analysis and populate File Summary column."""
+        print("        🔍 Processing FILE messages with vision analysis...")
+        
+        # Find FILE messages with image URLs in this channel
+        file_messages = self.df_clean[
+            (self.df_clean['Type'] == 'FILE') & 
+            (self.df_clean['File URL'].notna())
+        ].copy()
+        
+        if len(file_messages) == 0:
+            print("            No image FILE messages found for vision processing")
+            return
+            
+        print(f"            Found {len(file_messages)} image FILE messages to process")
+            
+        # Process each image
+        processed_count = 0
+        for idx, (df_idx, file_msg) in enumerate(file_messages.iterrows()):
+            try:
+                image_url = file_msg['File URL']
+                msg_ch_idx = file_msg['msg_ch_idx']
+                
+                print(f"            Processing image {idx + 1}/{len(file_messages)}: {image_url.split('/')[-1]}")
+                
+                # Get context for this image using static method
+                context_df = VisionProcessor.get_context_for_image(
+                    channel_df=self.df_clean,
+                    image_msg_ch_idx=msg_ch_idx,
+                    context_size=3  # Smaller context for batch processing
+                )
+                
+                # Analyze image with context using class method
+                analysis_result = VisionProcessor.analyze_image_with_context(
+                    context_df=context_df,
+                    image_url=image_url,
+                    llm_client=llm_client
+                )
+                
+                # Generate synthesized text summary using static method
+                summary_text = VisionProcessor.synthesize_visual_text(analysis_result)
+                
+                # Update File Summary in df_clean
+                self.df_clean.loc[df_idx, 'File Summary'] = summary_text
+                
+                processed_count += 1
+                
+            except Exception as e:
+                print(f"            ⚠️  Error processing image {image_url}: {e}")
+                continue
+                
+        print(f"            ✅ Successfully processed {processed_count}/{len(file_messages)} images")

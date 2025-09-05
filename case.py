@@ -128,11 +128,12 @@ class Case:
         )
         
         # Update case object fields in-place with classification results
-        self.main_category = classification_response.main_category
-        self.sub_category = classification_response.sub_category
-        self.classification_reasoning = classification_response.reasoning
-        self.classification_confidence = classification_response.confidence
-        self.classification_indicators = classification_response.key_indicators
+        # classification_response is a dict, not a Pydantic model
+        self.main_category = classification_response['main_category']
+        self.sub_category = classification_response['sub_category']
+        self.classification_reasoning = classification_response['reasoning']
+        self.classification_confidence = classification_response['confidence']
+        self.classification_indicators = classification_response['key_indicators']
         
         return classification_response
     

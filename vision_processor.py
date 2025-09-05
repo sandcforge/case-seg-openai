@@ -19,24 +19,15 @@ else:
 
 class VisionProcessor:
     """
-    Processes images with context to generate detailed descriptions and extract metadata.
+    Utility class for processing images with context to generate detailed descriptions and extract metadata.
     
-    This class takes DataFrame context and image URLs to produce comprehensive
+    This class provides static methods for taking DataFrame context and image URLs to produce comprehensive
     descriptions that allow customer service staff to understand image content
     without viewing the actual image.
     """
-    
-    def __init__(self, llm_client: 'LLMClient'):
-        """
-        Initialize VisionProcessor with LLM client.
         
-        Args:
-            llm_client: LLM client capable of vision analysis
-        """
-        self.llm_client = llm_client
-        
-    def get_context_for_image(self, 
-                             channel_df: pd.DataFrame, 
+    @staticmethod
+    def get_context_for_image(channel_df: pd.DataFrame, 
                              image_msg_ch_idx: int,
                              context_size: int = 5) -> pd.DataFrame:
         """
@@ -70,9 +61,11 @@ class VisionProcessor:
         
         return context_msgs
         
-    def analyze_image_with_context(self, 
+    @classmethod
+    def analyze_image_with_context(cls, 
                                  context_df: pd.DataFrame, 
-                                 image_url: str) -> Dict[str, Any]:
+                                 image_url: str,
+                                 llm_client: 'LLMClient') -> Dict[str, Any]:
         """
         Analyze image with DataFrame context and return structured JSON description.
         
@@ -112,7 +105,7 @@ class VisionProcessor:
                 context_text = '\n'.join(formatted_lines)
             
             # Load vision prompt template
-            prompt_template = self.llm_client.load_prompt("vision_analysis_prompt.md")
+            prompt_template = llm_client.load_prompt("vision_analysis_prompt.md")
             
             # Replace placeholders in the template
             final_prompt = prompt_template.replace("{{CONTEXT_MESSAGES}}", context_text)
@@ -120,7 +113,7 @@ class VisionProcessor:
             
             # Call vision-capable LLM directly - returns structured data
             call_label = f"vision_analysis_{image_url.split('/')[-1]}"
-            analysis = self.llm_client.generate_structured(
+            analysis = llm_client.generate_structured(
                 prompt=final_prompt,
                 response_format=VisionResponse,
                 call_label=call_label,
@@ -133,7 +126,8 @@ class VisionProcessor:
             # Return default structure with error information
             return None
 
-    def synthesize_visual_text(self, analysis: Optional[Dict[str, Any]]) -> str:
+    @staticmethod
+    def synthesize_visual_text(analysis: Optional[Dict[str, Any]]) -> str:
         """
         Convert vision analysis to readable text for message replacement.
         

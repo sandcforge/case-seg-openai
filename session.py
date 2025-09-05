@@ -39,7 +39,8 @@ class Session:
                  model: str = 'gpt-5',
                  session_name: Optional[str] = None,
                  enable_review: bool = False,
-                 enable_classification: bool = True):
+                 enable_classification: bool = True,
+                 enable_vision_processing: bool = True):
         """
         Initialize session with explicit parameters.
         
@@ -52,6 +53,7 @@ class Session:
             session_name: Optional session name (auto-generated if None)
             enable_review: Enable case review flag (default: False)
             enable_classification: Enable case classification flag (default: True)
+            enable_vision_processing: Enable vision processing for FILE messages (default: False)
         """
         # Pipeline configuration
         self.input_file = input_file
@@ -61,6 +63,7 @@ class Session:
         self.model = model
         self.enable_review = enable_review
         self.enable_classification = enable_classification
+        self.enable_vision_processing = enable_vision_processing
         
         # Session identification and output management
         self.session_name = session_name or datetime.now().strftime("%y%m%d_%H%M%S")
@@ -168,10 +171,14 @@ class Session:
         self.df['msg_ch_idx'] = self.df.groupby('Channel URL').cumcount()
         print(f"        Added msg_ch_idx column for {self.df['Channel URL'].nunique()} channels")
         
-        # 7. Generate clean DataFrame with essential columns
+        # 7. Add File Summary column for vision analysis results
+        self.df['File Summary'] = ''
+        print(f"        Added File Summary column for storing vision analysis results")
+        
+        # 8. Generate clean DataFrame with essential columns
         essential_columns = [
             'Created Time', 'Sender ID', 'Message', 'Channel URL',
-            'role', 'msg_ch_idx', 'Message ID'
+            'role', 'msg_ch_idx', 'Message ID', 'Type', 'File URL', 'File Summary'
         ]
         available_columns = [col for col in essential_columns if col in self.df.columns]
         self.df_clean = self.df[available_columns].copy()
@@ -194,6 +201,7 @@ class Session:
             print(f"                Channel: {Utils.format_channel_for_display(channel_url)} - {len(channel_df)} messages")
         
         return True
+    
     
     def create_session_folder(self) -> None:
         """Create session output folder structure."""
@@ -227,6 +235,14 @@ class Session:
                 print(f"        ⏭️  Loading existing results from file")
                 channel.build_cases_via_file(self.output_dir)
             else:
+                # Process vision analysis if enabled
+                if self.enable_vision_processing:
+                    try:
+                        channel.process_file_type_messages(llm_client)
+                    except Exception as e:
+                        print(f"        ⚠️  Vision processing failed: {e}")
+                        print(f"            Continuing without vision processing...")
+                
                 # Process channel with full pipeline
                 channel.build_cases_simple(llm_client)
                 
