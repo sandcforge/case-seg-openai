@@ -75,7 +75,6 @@ class Session:
         
         # Cross-channel collections
         self.channels: List[Channel] = []
-        self.channel_data_list: List[Dict[str, Any]] = []
     
     def run(self) -> None:
         """
@@ -186,18 +185,9 @@ class Session:
         
         print(f"        Processed {len(self.df_clean)} messages across {self.df_clean['Channel URL'].nunique()} channels")
         
-        # 8. Group by channel and create channel data list
-        self.channel_data_list = []
+        # 8. Display channel summary
         for channel_url in self.df_clean['Channel URL'].unique():
-            channel_df = self.df_clean[self.df_clean['Channel URL'] == channel_url].copy()
-            # Reset msg_ch_idx to ensure it starts from 0 for each channel
-            channel_df['msg_ch_idx'] = range(len(channel_df))
-            
-            self.channel_data_list.append({
-                "channel_url": channel_url,
-                "dataframe": channel_df
-            })
-            
+            channel_df = self.df_clean[self.df_clean['Channel URL'] == channel_url]
             print(f"                Channel: {Utils.format_channel_for_display(channel_url)} - {len(channel_df)} messages")
         
         return True
@@ -217,12 +207,14 @@ class Session:
         llm_client = LLMClient(model=self.model)
         print(f"LLM Client initialized with model: {self.model}")
         
-        # Process each channel
-        for channel_idx, channel_data in enumerate(self.channel_data_list):
-            channel_url = channel_data["channel_url"]
-            channel_df = channel_data["dataframe"]
+        # Process each channel directly
+        channel_urls = self.df_clean['Channel URL'].unique()
+        for channel_idx, channel_url in enumerate(channel_urls):
+            channel_df = self.df_clean[self.df_clean['Channel URL'] == channel_url].copy()
+            # Reset msg_ch_idx to ensure it starts from 0 for each channel
+            channel_df['msg_ch_idx'] = range(len(channel_df))
             
-            print(f"🔄 Channel {channel_idx + 1}/{len(self.channel_data_list)}: {Utils.format_channel_for_display(channel_url)} ({len(channel_df)} messages)")
+            print(f"🔄 Channel {channel_idx + 1}/{len(channel_urls)}: {Utils.format_channel_for_display(channel_url)} ({len(channel_df)} messages)")
             
             # Check if channel results already exist
             channel_name = Utils.format_channel_for_display(channel_url)
@@ -261,7 +253,7 @@ class Session:
         
         # Summary
         print(f"\n✅ Pipeline processing complete!")
-        print(f"Processed {len(self.channel_data_list)} channels")
+        print(f"Processed {len(self.channels)} channels")
         print(f"Results saved to timestamped session folders in output directory")
         print(f"Each session contains JSON and CSV files for successfully saved channels")
     
