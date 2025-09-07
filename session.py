@@ -14,8 +14,8 @@ import json
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from collections import Counter
-import pandas as pd
-import numpy as np
+import pandas as pd # type: ignore
+import numpy as np # type: ignore
 
 # Local imports
 from channel import Channel
@@ -286,10 +286,15 @@ class Session:
                 
                 # Print summary report to console
                 self._print_summary_report(stats_result)
+
+                # Export all cases to CSV
+                print(f"    📄 Exporting all cases to CSV...")
+                try:
+                    csv_path = self.save_all_cases_to_csv()
+                    print(f"    ✅ CSV export complete")
+                except Exception as e:
+                    print(f"    ⚠️  CSV export failed: {e}")
                 
-                # Save statistics to file
-                print(f"    💾 Saving statistics...")
-                self._save_stats_to_file(stats_result)
                 print(f"    ✅ Statistics analysis complete")
             else:
                 print(f"    ⚠️  No cases found for statistical analysis")
@@ -542,17 +547,86 @@ class Session:
         
         print(f"\n" + "=" * 50)
     
-    def _save_stats_to_file(self, stats_result: Dict[str, Any]) -> None:
-        """Save comprehensive statistics to JSON file."""
+    def save_all_cases_to_csv(self, output_filename: str = None) -> str:
+        """
+        导出所有 cases 到 CSV 文件，格式与 merge_aug.csv 一致
+        
+        Args:
+            output_filename: 输出文件名（可选），默认为 'all_cases_merged.csv'
+            
+        Returns:
+            保存的文件路径
+        """
+        import pandas as pd
+        
+        # 收集所有 channels 的 cases
+        all_cases = []
+        for channel in self.channels:
+            if hasattr(channel, 'cases') and channel.cases:
+                all_cases.extend(channel.cases)
+        
+        if not all_cases:
+            print("⚠️  No cases found to export")
+            return ""
+        
+        print(f"📄 Exporting {len(all_cases)} cases to CSV...")
+        
+        # 准备CSV数据
+        csv_data = []
+        for case in all_cases:
+            # 处理数组字段，转换为字符串格式
+            def format_array_field(field_value):
+                if not field_value:
+                    return "[]"
+                return str(field_value)  # 转换为字符串格式 ['item1', 'item2']
+            
+            # 提取meta信息
+            meta = case.meta if case.meta else None
+            tracking_numbers = meta.tracking_numbers if meta else []
+            order_numbers = meta.order_numbers if meta else []
+            user_names = meta.user_names if meta else []
+            
+            row = {
+                'channel_url': case.channel_url or '',
+                'summary': case.summary or '',
+                'status': case.status or '',
+                'pending_party': case.pending_party or '',
+                'segmentation_confidence': case.segmentation_confidence or 0.0,
+                'main_category': case.main_category or '',
+                'sub_category': case.sub_category or '',
+                'classification_confidence': case.classification_confidence or 0.0,
+                'first_res_time': case.first_res_time if case.first_res_time != -1 else -1,
+                'handle_time': case.handle_time if case.handle_time != -1 else -1,
+                'first_contact_resolution': case.first_contact_resolution if case.first_contact_resolution != -1 else -1,
+                'usr_msg_num': case.usr_msg_num if case.usr_msg_num != -1 else -1,
+                'total_msg_num': case.total_msg_num if case.total_msg_num != -1 else -1,
+                'start_time': case.start_time or '',
+                'end_time': case.end_time or '',
+                'tracking_numbers': format_array_field(tracking_numbers),
+                'order_numbers': format_array_field(order_numbers),
+                'user_names': format_array_field(user_names),
+                'msg_index_list': format_array_field(case.msg_index_list),
+                'global_msg_id_list': format_array_field(case.global_msg_id_list)
+            }
+            csv_data.append(row)
+        
+        # 创建DataFrame
+        df = pd.DataFrame(csv_data)
+        
+        # 确定输出文件路径
         session_folder = os.path.join(self.output_dir, f"session_{self.session_name}")
         os.makedirs(session_folder, exist_ok=True)
         
-        stats_file = os.path.join(session_folder, f"statistics_{self.session_name}.json")
+        if output_filename is None:
+            output_filename = "all_cases_merged.csv"
         
+        output_path = os.path.join(session_folder, output_filename)
+        
+        # 保存到CSV文件
         try:
-            with open(stats_file, 'w', encoding='utf-8') as f:
-                json.dump(stats_result, f, indent=2, ensure_ascii=False)
-            print(f"            Statistics saved to: {stats_file}")
-        except IOError as e:
-            print(f"            ❌ Error saving statistics file: {e}")
+            df.to_csv(output_path, index=False, encoding='utf-8')
+            print(f"            ✅ All cases exported to: {output_path}")
+            return output_path
+        except Exception as e:
+            print(f"            ❌ Error exporting cases to CSV: {e}")
             raise

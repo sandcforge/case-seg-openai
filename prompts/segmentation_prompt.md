@@ -80,7 +80,7 @@ Return only:
       "summary": "Brief description of the issue, actions taken, and resolution or attemps.",
       "status": "open|ongoing|resolved|blocked",
       "pending_party": "seller|platform|N/A",
-      "confidence": 0.9,
+      "segmentation_confidence": 0.9,
       "meta": {
         "tracking_numbers": ["1Z123456789", "ABC123"],
         "order_numbers": ["ORD-12345", "ORD-67890"],
@@ -97,7 +97,7 @@ Return only:
 * Use only `msg_ch_idx` from this chunk (include overlap if applicable).
 * Sort `msg_list` ascending; no duplicates.
 * `summary` must be 1–3 sentences with orders, buyer, topic, actions, status, pending party.
-* `confidence` ∈ \[0,1].
+* `segmentation_confidence` ∈ \[0,1].
 * `meta` contains business-relevant identifiers extracted from messages:
   - `tracking_numbers`: Array of shipping tracking IDs (1Z*, 9*, FedEx numbers, etc.)
   - `order_numbers`: Array of order/transaction IDs mentioned in the case

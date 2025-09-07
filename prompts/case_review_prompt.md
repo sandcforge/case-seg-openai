@@ -63,7 +63,7 @@ You will receive:
       "status": "ongoing",
       "pending_party": "seller",
       "last_update": "2025-07-01T13:29:01Z", 
-      "confidence": 0.9,
+      "segmentation_confidence": 0.9,
       "meta": {
         "tracking_numbers": ["ABC123"],
         "order_numbers": ["12345"],
@@ -71,7 +71,7 @@ You will receive:
       }
     }
   ],
-  "confidence": 0.85
+  "review_confidence": 0.85
 }
 ```
 

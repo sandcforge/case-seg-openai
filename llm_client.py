@@ -11,7 +11,7 @@ import openai # type: ignore
 import anthropic # type: ignore
 from datetime import datetime
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel # type: ignore
 
 
 class VisionMetaInfo(BaseModel):
