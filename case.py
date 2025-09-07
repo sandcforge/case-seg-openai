@@ -44,36 +44,139 @@ class Case:
     summary: str = "N/A"
     status: str = "ongoing"  # open | ongoing | resolved | blocked
     pending_party: str = "N/A"  # seller|platform|N/A
-    confidence: float = 0.0
+    segmentation_confidence: float = 0.0
     meta: Optional[MetaInfo] = None
+    channel_url: str = ""  # Channel URL this case belongs to
     # Classification fields
     main_category: str = "unknown"  # 主分类
     sub_category: str = "unknown"  # 子分类
     classification_reasoning: str = "N/A"  # 分类理由
     classification_confidence: float = 0.0  # 分类置信度
     classification_indicators: List[str] = field(default_factory=list)  # 关键指标
-    # Performance metrics
-    first_res_time: int = -1  # Support response time in minutes, -1 if not processed
-    handle_time: int = -1  # Time between first and last message in minutes, -1 if not processed
-    first_contact_resolution: int = -1  # 1=resolved within 8h, 0=not, -1=not processed
-    usr_msg_num: int = -1  # Count of user messages, -1 if not processed
-    total_msg_num: int = -1  # Total count of messages, -1 if not processed
     
     def __post_init__(self):
         """Initialize meta if not provided"""
         if self.meta is None:
             self.meta = MetaInfo()
     
+    @property
+    def global_msg_id_list(self) -> List[str]:
+        """Get list of Message IDs from the messages DataFrame"""
+        if self.messages is None or self.messages.empty:
+            return []
+        if 'Message ID' not in self.messages.columns:
+            return []
+        return self.messages['Message ID'].tolist()
+    
+    @property
+    def start_time(self) -> Optional[str]:
+        """Get start time from first message in the case"""
+        if self.messages is None or self.messages.empty:
+            return None
+        if 'Created Time' not in self.messages.columns:
+            return None
+        df_sorted = self.messages.sort_values('Created Time')
+        first_time = pd.to_datetime(df_sorted.iloc[0]['Created Time'])
+        return first_time.strftime('%Y-%m-%d %H:%M:%S')
+    
+    @property
+    def end_time(self) -> Optional[str]:
+        """Get end time from last message in the case"""
+        if self.messages is None or self.messages.empty:
+            return None
+        if 'Created Time' not in self.messages.columns:
+            return None
+        df_sorted = self.messages.sort_values('Created Time')
+        last_time = pd.to_datetime(df_sorted.iloc[-1]['Created Time'])
+        return last_time.strftime('%Y-%m-%d %H:%M:%S')
+    
+    @property
+    def usr_msg_num(self) -> int:
+        """Count of user messages (non-customer_service role)"""
+        if self.messages is None or self.messages.empty:
+            return -1
+        if 'role' not in self.messages.columns:
+            return -1
+        return len(self.messages[self.messages['role'] != 'customer_service'])
+    
+    @property
+    def total_msg_num(self) -> int:
+        """Total count of messages"""
+        if self.messages is None or self.messages.empty:
+            return -1
+        return len(self.messages)
+    
+    @property
+    def handle_time(self) -> int:
+        """Time between first and last message in minutes"""
+        if self.messages is None or self.messages.empty:
+            return -1
+        if 'Created Time' not in self.messages.columns:
+            return -1
+        df_sorted = self.messages.sort_values('Created Time')
+        first_time = pd.to_datetime(df_sorted.iloc[0]['Created Time'])
+        last_time = pd.to_datetime(df_sorted.iloc[-1]['Created Time'])
+        return int((last_time - first_time).total_seconds() / 60)
+    
+    @property
+    def first_res_time(self) -> int:
+        """Support response time in minutes, -1 if not applicable"""
+        if self.messages is None or self.messages.empty:
+            return -1
+        if 'Created Time' not in self.messages.columns or 'role' not in self.messages.columns:
+            return -1
+        
+        df_sorted = self.messages.sort_values('Created Time')
+        if len(df_sorted) == 0:
+            return -1
+        
+        first_message = df_sorted.iloc[0]
+        
+        # If support initiates conversation, return -1
+        if first_message['role'] == 'customer_service':
+            return -1
+        
+        # First message is from user, find first support response
+        support_messages = df_sorted[df_sorted['role'] == 'customer_service']
+        
+        if len(support_messages) > 0:
+            # Found support response
+            first_user_time = pd.to_datetime(first_message['Created Time'])
+            first_support_time = pd.to_datetime(support_messages.iloc[0]['Created Time'])
+            return int((first_support_time - first_user_time).total_seconds() / 60)
+        else:
+            # No support response, use handle_time
+            return self.handle_time
+    
+    @property
+    def first_contact_resolution(self) -> int:
+        """1=resolved within 8h, 0=not, -1=not processed"""
+        if self.messages is None or self.messages.empty:
+            return -1
+        
+        handle_time_val = self.handle_time
+        if handle_time_val == -1:
+            return -1
+        
+        # Check if resolved within 8 hours (480 minutes)
+        if self.status == "resolved" and handle_time_val <= 480:
+            return 1
+        else:
+            return 0
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
         return {
             'case_id': self.case_id,
             'msg_index_list': self.msg_index_list,  # Now just a list of integers
+            'global_msg_id_list': self.global_msg_id_list,  # List of Message IDs
             'summary': self.summary,
             'status': self.status,
             'pending_party': self.pending_party,
-            'confidence': self.confidence,
+            'segmentation_confidence': self.segmentation_confidence,
+            'channel_url': self.channel_url,
+            'start_time': self.start_time,
+            'end_time': self.end_time,
             'main_category': self.main_category,
             'sub_category': self.sub_category,
             'classification_reasoning': self.classification_reasoning,
@@ -137,57 +240,6 @@ class Case:
         
         return classification_response
     
-    def calculate_metrics(self) -> None:
-        """Calculate performance metrics based on messages DataFrame"""
-        if self.messages is None or self.messages.empty:
-            return  # Keep default -1 values
-        
-        # Sort messages by timestamp for chronological processing
-        df_sorted = self.messages.sort_values('Created Time')
-        
-        # Calculate message counts
-        self.usr_msg_num = len(df_sorted[df_sorted['role'] != 'customer_service'])
-        self.total_msg_num = len(df_sorted)
-        
-        # Validation: Warn if no support messages detected
-        if self.usr_msg_num == self.total_msg_num:
-            print(f"                        ⚠️  WARNING - Case {self.case_id}: No support messages detected ({self.total_msg_num} user messages)")
-        
-        # Calculate handle time (first to last message)
-        first_time = pd.to_datetime(df_sorted.iloc[0]['Created Time'])
-        last_time = pd.to_datetime(df_sorted.iloc[-1]['Created Time'])
-        self.handle_time = int((last_time - first_time).total_seconds() / 60)  # Convert to minutes
-
-        # Calculate first response time
-        if len(df_sorted) == 0:
-            return  # Keep -1
-        
-        first_message = df_sorted.iloc[0]
-        
-        # If support initiates conversation, keep -1
-        if first_message['role'] == 'customer_service':
-            # first_res_time remains -1
-            pass
-        else:
-            # First message is from user, find first support response
-            support_messages = df_sorted[df_sorted['role'] == 'customer_service']
-            
-            if len(support_messages) > 0:
-                # Found support response
-                first_user_time = pd.to_datetime(first_message['Created Time'])
-                first_support_time = pd.to_datetime(support_messages.iloc[0]['Created Time'])
-                self.first_res_time = int((first_support_time - first_user_time).total_seconds() / 60)  # Minutes
-            else:
-                # No support response, use handle_time
-                self.first_res_time = self.handle_time
-        
-        # Calculate first contact resolution
-        if self.status == "resolved" and self.handle_time != -1 and self.handle_time <= 480:  # 8 hours = 480 minutes
-            self.first_contact_resolution = 1
-        elif self.handle_time != -1:  # Processed but not resolved within 8h
-            self.first_contact_resolution = 0
-        # Otherwise keep -1 (not processed)
-
 
 # ----------------------------
 # LLM-Compatible Models
@@ -201,7 +253,7 @@ class CaseSegmentationLLMRes(BaseModel):
     summary: str
     status: str  # open | ongoing | resolved | blocked
     pending_party: str  # seller|platform|N/A
-    confidence: float
+    segmentation_confidence: float
     meta: MetaInfo
 
 
@@ -238,7 +290,7 @@ class CaseReviewResponse(BaseModel):
     model_config = {"extra": "forbid"}
     review_actions: List[ReviewAction] = Field(..., description="review操作列表")
     updated_cases: List[CaseSegmentationLLMRes] = Field(..., description="更新后的cases")
-    confidence: float = Field(..., description="review结果的置信度", ge=0.0, le=1.0)
+    review_confidence: float = Field(..., description="review结果的置信度", ge=0.0, le=1.0)
 
 
 # ----------------------------

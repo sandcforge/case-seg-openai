@@ -39,7 +39,7 @@ class Channel:
         "status": "ongoing",            # 缺省设为 ongoing，便于保守承接
         "pending_party": "N/A",
         "last_update": "N/A",
-        "confidence": 0.0,
+        "segmentation_confidence": 0.0,
         "anchors": {}
     }
     
@@ -170,12 +170,13 @@ class Channel:
             # Create Case object from dictionary
             case_obj = Case(
                 case_id=f'case_{idx:03d}',
+                channel_url=self.channel_url,
                 msg_index_list=msg_index_list,
                 messages=case_messages,
                 summary=case_dict['summary'],
                 status=case_dict['status'],
                 pending_party=case_dict['pending_party'],
-                confidence=case_dict['confidence'],
+                segmentation_confidence=case_dict['segmentation_confidence'],
                 meta=MetaInfo(
                     tracking_numbers=case_dict.get('meta', {}).get('tracking_numbers', []),
                     order_numbers=case_dict.get('meta', {}).get('order_numbers', []),
@@ -189,9 +190,6 @@ class Channel:
                 case_obj.classify_case(llm_client)
             except Exception as e:
                 print(f"        ⚠️  Classification failed for {case_obj.case_id}: {e}")
-            
-            # Calculate performance metrics
-            case_obj.calculate_metrics()
             
             case_objects.append(case_obj)
         
@@ -223,35 +221,30 @@ class Channel:
         # 加载JSON数据
         try:
             with open(channel_cases_file, 'r', encoding='utf-8') as f:
-                saved_data = json.load(f)
+                global_cases_data = json.load(f)
         except Exception as e:
             raise RuntimeError(f"Failed to load JSON file: {e}")
         
-        global_cases_data = saved_data.get('global_cases', [])
-        
-        # 将字典数据转换为Case对象（与build_global_cases完全相同的逻辑）
+        # 将字典数据转换为Case对象
         case_objects = []
         for case_dict in global_cases_data:
             # 创建Case对象，使用文件中的所有数据
+            msg_index_list = case_dict.get('msg_index_list', [])
+            
             case_obj = Case(
                 case_id=case_dict.get('case_id'),
-                msg_index_list=case_dict.get('msg_index_list', []),
+                msg_index_list=msg_index_list,
                 summary=case_dict.get('summary', 'N/A'),
                 status=case_dict.get('status', 'ongoing'),
                 pending_party=case_dict.get('pending_party', 'N/A'),
-                confidence=case_dict.get('confidence', 0.0),
+                segmentation_confidence=case_dict.get('segmentation_confidence', 0.0),
+                channel_url=case_dict.get('channel_url', self.channel_url),
                 # 加载分类结果
                 main_category=case_dict.get('main_category', 'unknown'),
                 sub_category=case_dict.get('sub_category', 'unknown'),
                 classification_reasoning=case_dict.get('classification_reasoning', 'N/A'),
                 classification_confidence=case_dict.get('classification_confidence', 0.0),
                 classification_indicators=case_dict.get('classification_indicators', []),
-                # 加载性能指标
-                first_res_time=case_dict.get('first_res_time', -1),
-                handle_time=case_dict.get('handle_time', -1),
-                first_contact_resolution=case_dict.get('first_contact_resolution', -1),
-                usr_msg_num=case_dict.get('usr_msg_num', -1),
-                total_msg_num=case_dict.get('total_msg_num', -1),
                 # 加载meta信息
                 meta=MetaInfo(
                     tracking_numbers=case_dict.get('meta', {}).get('tracking_numbers', []),
@@ -295,11 +288,7 @@ class Channel:
         # Save channel cases to JSON in session folder
         channel_name = Utils.format_channel_for_display(self.channel_url)
         channel_cases_file = os.path.join(session_folder, f"cases_{channel_name}.json")
-        save_result = {
-            "channel_url": self.channel_url,
-            "global_cases": [case.to_dict() for case in self.cases],
-            "total_messages": len(self.df_clean),
-        }
+        save_result = [case.to_dict() for case in self.cases]
         
         try:
             with open(channel_cases_file, 'w', encoding='utf-8') as f:
@@ -374,7 +363,7 @@ class Channel:
                 "summary": "N/A",
                 "status": "ongoing",
                 "pending_party": "N/A",
-                "confidence": 0.0,
+                "segmentation_confidence": 0.0,
                 "meta": {
                     "tracking_numbers": [],
                     "order_numbers": [],
@@ -432,10 +421,10 @@ class Channel:
 
             # 置信度裁剪
             try:
-                c["confidence"] = float(c.get("confidence", 0.0))
+                c["segmentation_confidence"] = float(c.get("segmentation_confidence", 0.0))
             except Exception:
-                c["confidence"] = 0.0
-            c["confidence"] = max(0.0, min(1.0, c["confidence"]))
+                c["segmentation_confidence"] = 0.0
+            c["segmentation_confidence"] = max(0.0, min(1.0, c["segmentation_confidence"]))
 
             # 状态合法性
             if c.get("status") not in ("open", "ongoing", "resolved", "blocked"):
@@ -476,14 +465,14 @@ class Channel:
             return 1.0 / (1 + dist)  # 1, 0.5, 0.33, ...
 
         def _choose_one_for_duplicate(i: int, cases: List[Dict[str, Any]], cids: List[int], prev_context: Optional[Dict[str, Any]]) -> int:
-            # 规则：anchor_strength > 承接(prev_context) > confidence > proximity > 较小 case_id（稳定）
+            # 规则：anchor_strength > 承接(prev_context) > segmentation_confidence > proximity > 较小 case_id（稳定）
             scored = []
             for cid in cids:
                 c = cases[cid]
                 scored.append((
                     _anchor_strength(c),
                     1 if _hits_active_hints(c, prev_context) else 0,
-                    float(c.get("confidence", 0.0)),
+                    float(c.get("segmentation_confidence", 0.0)),
                     _proximity_score(i, c),
                     -cid,  # 反向用于最后的稳定 tie-break（越小优先）
                     cid
@@ -540,7 +529,7 @@ class Channel:
                     1 if _hits_active_hints(c, prev_context) else 0,
                     _anchor_strength(c),
                     _proximity_score(msg_idx, c),
-                    float(c.get("confidence", 0.0)),
+                    float(c.get("segmentation_confidence", 0.0)),
                     -cid,
                     cid
                 ))
@@ -595,7 +584,7 @@ class Channel:
 
         # 2) case 内排序稳定 + 去空 case
         out = [c for c in out if c["msg_index_list"]]
-        out.sort(key=lambda c: (c["msg_index_list"][0], c.get("confidence", 0.0) * -1))
+        out.sort(key=lambda c: (c["msg_index_list"][0], c.get("segmentation_confidence", 0.0) * -1))
 
         # 3) 建立 msg -> cases 反查
         msg_to_cases = defaultdict(list)
@@ -621,7 +610,7 @@ class Channel:
                 "msg_idx": i,
                 "chosen_case": winner,
                 "rejected_cases": losers,
-                "reason": "anchor > continuation > confidence > proximity > case_id"
+                "reason": "anchor > continuation > segmentation_confidence > proximity > case_id"
             })
 
         # 5) 再次清理空 case
