@@ -39,7 +39,6 @@ class Session:
                  model: str = 'gpt-5',
                  session_name: Optional[str] = None,
                  enable_review: bool = False,
-                 enable_classification: bool = True,
                  enable_vision_processing: bool = True):
         """
         Initialize session with explicit parameters.
@@ -52,7 +51,6 @@ class Session:
             model: LLM model name (default: 'gpt-5')
             session_name: Optional session name (auto-generated if None)
             enable_review: Enable case review flag (default: False)
-            enable_classification: Enable case classification flag (default: True)
             enable_vision_processing: Enable vision processing for FILE messages (default: False)
         """
         # Pipeline configuration
@@ -62,7 +60,6 @@ class Session:
         self.overlap = overlap
         self.model = model
         self.enable_review = enable_review
-        self.enable_classification = enable_classification
         self.enable_vision_processing = enable_vision_processing
         
         # Session identification and output management

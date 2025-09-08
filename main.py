@@ -62,12 +62,6 @@ def main() -> None:
         help='Enable LLM-based case review for regions between chunks'
     )
     parser.add_argument(
-        '--enable-classification',
-        action='store_true',
-        default=True,
-        help='Enable LLM-based case classification for all cases (default: True)'
-    )
-    parser.add_argument(
         '--session', '-s',
         help='Session name for output organization (default: auto-generated timestamp)'
     )
@@ -82,8 +76,7 @@ def main() -> None:
         overlap=args.overlap,
         model=args.model,
         session_name=args.session,
-        enable_review=args.enable_review,
-        enable_classification=args.enable_classification
+        enable_review=args.enable_review
     )
     session.run()
 
