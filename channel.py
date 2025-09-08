@@ -46,12 +46,13 @@ class Channel:
     ANCHOR_KEYS_STRICT = ("tracking", "order", "buyer", "topic")
     ANCHOR_KEYS_LAX = ("tracking", "order", "order_ids", "buyer", "buyers", "topic")
     
-    def __init__(self, df_clean: pd.DataFrame, channel_url: str, session: str, chunk_size: int = 80, overlap: int = 20):
+    def __init__(self, df_clean: pd.DataFrame, channel_url: str, session: str, chunk_size: int = 80, overlap: int = 20, force_classification: bool = False):
         self.df_clean = df_clean.copy()  # Make a copy to avoid modifying original
         self.channel_url = channel_url
         self.session = session
         self.chunk_size = chunk_size
         self.overlap = overlap
+        self.force_classification = force_classification
         self.cases: List[Case] = []
         
         self.validate_parameters()
@@ -198,12 +199,13 @@ class Channel:
         print(f"    ✅ Cases built successfully ({len(self.cases)} Case objects)")
         return self.cases
     
-    def build_cases_via_file(self, output_dir: str) -> List[Case]:
+    def build_cases_via_file(self, output_dir: str, llm_client: Optional['LLMClient'] = None) -> List[Case]:
         """
         从JSON文件加载现有结果并构建Case对象，确保与LLM处理路径的self.cases结构完全一致
         
         Args:
             output_dir: 输出目录路径
+            llm_client: LLM客户端，用于强制分类时调用
             
         Returns:
             Case对象列表，包含所有分类和性能指标数据
@@ -257,11 +259,20 @@ class Channel:
             case_messages = self.df_clean[self.df_clean['msg_ch_idx'].isin(case_obj.msg_index_list)].copy()
             case_obj.messages = case_messages
             
+            # 强制分类（如果启用）
+            if self.force_classification and llm_client is not None:
+                print(f"        🔄 Force re-classifying case {case_obj.case_id}")
+                try:
+                    case_obj.classify_case(llm_client)
+                except Exception as e:
+                    print(f"        ⚠️  Force classification failed for {case_obj.case_id}: {e}")
+            
             case_objects.append(case_obj)
         
         self.cases = case_objects
         
-        print(f"        ✅ Cases loaded from file successfully ({len(self.cases)} Case objects)")
+        classification_msg = " with force re-classification" if self.force_classification and llm_client is not None else ""
+        print(f"        ✅ Cases loaded from file successfully ({len(self.cases)} Case objects{classification_msg})")
         return self.cases
 
     def _format_messages_for_prompt(self, chunk_df: pd.DataFrame) -> str:

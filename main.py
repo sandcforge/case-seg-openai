@@ -62,6 +62,11 @@ def main() -> None:
         help='Enable LLM-based case review for regions between chunks'
     )
     parser.add_argument(
+        '--force-classification',
+        action='store_true',
+        help='Force classification re-run when loading cases from existing files'
+    )
+    parser.add_argument(
         '--session', '-s',
         help='Session name for output organization (default: auto-generated timestamp)'
     )
@@ -76,7 +81,8 @@ def main() -> None:
         overlap=args.overlap,
         model=args.model,
         session_name=args.session,
-        enable_review=args.enable_review
+        enable_review=args.enable_review,
+        force_classification=args.force_classification
     )
     session.run()
 

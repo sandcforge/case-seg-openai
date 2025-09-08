@@ -39,7 +39,8 @@ class Session:
                  model: str = 'gpt-5',
                  session_name: Optional[str] = None,
                  enable_review: bool = False,
-                 enable_vision_processing: bool = True):
+                 enable_vision_processing: bool = True,
+                 force_classification: bool = False):
         """
         Initialize session with explicit parameters.
         
@@ -52,6 +53,7 @@ class Session:
             session_name: Optional session name (auto-generated if None)
             enable_review: Enable case review flag (default: False)
             enable_vision_processing: Enable vision processing for FILE messages (default: False)
+            force_classification: Force classification re-run when loading from files (default: False)
         """
         # Pipeline configuration
         self.input_file = input_file
@@ -61,6 +63,7 @@ class Session:
         self.model = model
         self.enable_review = enable_review
         self.enable_vision_processing = enable_vision_processing
+        self.force_classification = force_classification
         
         # Session identification and output management
         self.session_name = session_name or datetime.now().strftime("%y%m%d_%H%M%S")
@@ -218,11 +221,11 @@ class Session:
             channel_cases_file = os.path.join(self.output_folder, f"cases_{channel_name}.json")
             
             # Create Channel instance
-            channel = Channel(channel_df, channel_url, self.session_name, self.chunk_size, self.overlap)
+            channel = Channel(channel_df, channel_url, self.session_name, self.chunk_size, self.overlap, self.force_classification)
             
             if os.path.exists(channel_cases_file):
                 print(f"        ⏭️  Loading existing results from file")
-                channel.build_cases_via_file(self.output_dir)
+                channel.build_cases_via_file(self.output_dir, llm_client)
             else:
                 # Process vision analysis if enabled
                 if self.enable_vision_processing:
