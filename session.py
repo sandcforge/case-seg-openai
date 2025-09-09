@@ -238,15 +238,15 @@ class Session:
                 # Process channel with full pipeline
                 channel.build_cases_simple(llm_client)
                 
-                # Save channel results
-                print(f"    💾 Saving results...")
-                try:
-                    channel.save_results_to_json(self.output_dir)
-                    channel.save_results_to_csv(self.output_dir)
-                    print(f"    ✅ Results saved successfully")
-                except Exception as save_error:
-                    print(f"        ❌ Error saving results: {str(save_error)}")
-                    print(f"        Processing completed but save failed - continuing...")
+            # Save channel results
+            print(f"    💾 Saving results...")
+            try:
+                channel.save_results_to_json(self.output_dir)
+                channel.save_results_to_csv(self.output_dir)
+                print(f"    ✅ Results saved successfully")
+            except Exception as save_error:
+                print(f"        ❌ Error saving results: {str(save_error)}")
+                print(f"        Processing completed but save failed - continuing...")
             
             # Collect channel for cross-channel operations
             self.channels.append(channel)
