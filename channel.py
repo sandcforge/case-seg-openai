@@ -98,8 +98,8 @@ class Channel:
             
             print(f"            Chunk {i+1}/{num_chunks}: Processing chunk {i}")
             
-            # Format messages using local helper method
-            current_messages = self._format_messages_for_prompt(chunk_messages)
+            # Format messages using Utils helper method
+            current_messages = Utils.format_messages_for_prompt(chunk_messages)
             
             # Generate case segments using LLM for current chunk
             try:
@@ -275,18 +275,6 @@ class Channel:
         print(f"        ✅ Cases loaded from file successfully ({len(self.cases)} Case objects{classification_msg})")
         return self.cases
 
-    def _format_messages_for_prompt(self, chunk_df: pd.DataFrame) -> str:
-        """Format DataFrame messages for LLM prompt: message_index | sender id | role | timestamp | text"""
-        formatted_lines = []
-        for _, row in chunk_df.iterrows():
-            # Handle NaN messages and replace newlines with spaces to keep one line per message
-            message_text = str(row['Message']).replace('\n', ' ').replace('\r', ' ')
-            if message_text == 'nan':
-                message_text = ''
-            
-            formatted_line = f"{row['msg_ch_idx']} | {row['Sender ID']} | {row['role']} | {row['Created Time']} | {message_text}"
-            formatted_lines.append(formatted_line)
-        return '\n'.join(formatted_lines)
 
     def save_results_to_json(self, output_dir: str) -> None:
         """Save channel cases to JSON file"""
@@ -496,7 +484,7 @@ class Channel:
             if msg_idx not in chunk_df['msg_ch_idx'].values:
                 return True
             message = chunk_df[chunk_df['msg_ch_idx'] == msg_idx].iloc[0]
-            text = str(message.get('Message', '')).strip()  # Use 'Message' column as seen in Utils.format_one_msg_for_prompt
+            text = str(message.get('Message', '')).strip()  # Use 'Message' column as seen in Utils.format_messages_for_prompt
             return len(text) == 0
         
         def _find_nearest_same_sender_case(msg_idx: int, cases: List[Dict]) -> Optional[int]:

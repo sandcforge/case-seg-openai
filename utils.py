@@ -20,12 +20,18 @@ class Utils:
         return channel_url.split('_')[-1]
     
     @staticmethod
-    def format_one_msg_for_prompt(row) -> str:
+    def format_messages_for_prompt(chunk_df) -> str:
         """
-        Format single message row for LLM prompt: message_index | sender id | role | timestamp | text
-        Used for case classification in case.py
+        Format DataFrame messages for LLM prompt: message_index | sender id | role | timestamp | text
+        Supports both single rows and DataFrames via pandas iterrows() method
         """
-        message_text = str(row['Message']).replace('\n', ' ').replace('\r', ' ')
-        if message_text == 'nan':
-            message_text = ''
-        return f"{row['msg_ch_idx']} | {row['Sender ID']} | {row['role']} | {row['Created Time']} | {message_text}"
+        formatted_lines = []
+        for _, row in chunk_df.iterrows():
+            # Handle NaN messages and replace newlines with spaces to keep one line per message
+            message_text = str(row['Message']).replace('\n', ' ').replace('\r', ' ')
+            if message_text == 'nan':
+                message_text = ''
+            
+            formatted_line = f"{row['msg_ch_idx']} | {row['Sender ID']} | {row['role']} | {row['Created Time']} | {message_text}"
+            formatted_lines.append(formatted_line)
+        return '\n'.join(formatted_lines)

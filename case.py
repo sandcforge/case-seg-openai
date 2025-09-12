@@ -200,11 +200,7 @@ class Case:
             raise ValueError("Cannot classify case: no messages available")
         
         # Format all messages in this case using the Utils method
-        formatted_messages = []
-        for _, row in self.messages.iterrows():
-            formatted_messages.append(Utils.format_one_msg_for_prompt(row))
-        
-        messages_text = '\n'.join(formatted_messages)
+        messages_text = Utils.format_messages_for_prompt(self.messages)
         
         # Load the classification prompt template
         try:
