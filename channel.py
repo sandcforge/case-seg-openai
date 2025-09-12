@@ -46,13 +46,14 @@ class Channel:
     ANCHOR_KEYS_STRICT = ("tracking", "order", "buyer", "topic")
     ANCHOR_KEYS_LAX = ("tracking", "order", "order_ids", "buyer", "buyers", "topic")
     
-    def __init__(self, df_clean: pd.DataFrame, channel_url: str, session: str, chunk_size: int = 80, overlap: int = 20, force_classification: bool = False):
+    def __init__(self, df_clean: pd.DataFrame, channel_url: str, session: str, chunk_size: int = 80, overlap: int = 20, force_classification: bool = False, enable_vision_processing: bool = True):
         self.df_clean = df_clean.copy()  # Make a copy to avoid modifying original
         self.channel_url = channel_url
         self.session = session
         self.chunk_size = chunk_size
         self.overlap = overlap
         self.force_classification = force_classification
+        self.enable_vision_processing = enable_vision_processing
         self.cases: List[Case] = []
         
         self.validate_parameters()
@@ -144,7 +145,7 @@ class Channel:
         return repaired_cases
     
     
-    def build_cases_simple(self, llm_client: 'LLMClient') -> List[Case]:
+    def build_cases_via_llm(self, llm_client: 'LLMClient') -> List[Case]:
         """
         构建cases：直接对channel messages进行分割，创建Case对象并分类
         
@@ -155,6 +156,14 @@ class Channel:
             Case对象列表，包含分类和性能指标
         """
         print(f"    🔄 Segmenting channel messages directly")
+        
+        # 0. Process vision analysis if enabled
+        if self.enable_vision_processing:
+            try:
+                self.process_file_type_messages(llm_client)
+            except Exception as e:
+                print(f"        ⚠️  Vision processing failed: {e}")
+                print(f"            Continuing without vision processing...")
         
         # 1. 直接对整个channel的消息进行分割
         repaired_case_dicts = self.segment_all_chunks(llm_client)
@@ -199,16 +208,15 @@ class Channel:
         print(f"    ✅ Cases built successfully ({len(self.cases)} Case objects)")
         return self.cases
     
-    def build_cases_via_file(self, output_dir: str, llm_client: Optional['LLMClient'] = None) -> List[Case]:
+    def build_cases_via_file(self, output_dir: str) -> List[Case]:
         """
-        从JSON文件加载现有结果并构建Case对象，确保与LLM处理路径的self.cases结构完全一致
+        从JSON文件加载现有结果并构建Case对象，纯粹的文件加载操作，不进行LLM分类
         
         Args:
             output_dir: 输出目录路径
-            llm_client: LLM客户端，用于强制分类时调用
             
         Returns:
-            Case对象列表，包含所有分类和性能指标数据
+            Case对象列表，包含从文件加载的所有数据
         """
         import json
         
@@ -259,22 +267,118 @@ class Channel:
             case_messages = self.df_clean[self.df_clean['msg_ch_idx'].isin(case_obj.msg_index_list)].copy()
             case_obj.messages = case_messages
             
-            # 强制分类（如果启用）
-            if self.force_classification and llm_client is not None:
-                print(f"        🔄 Force re-classifying case {case_obj.case_id}")
-                try:
-                    case_obj.classify_case(llm_client)
-                except Exception as e:
-                    print(f"        ⚠️  Force classification failed for {case_obj.case_id}: {e}")
-            
             case_objects.append(case_obj)
         
         self.cases = case_objects
         
-        classification_msg = " with force re-classification" if self.force_classification and llm_client is not None else ""
-        print(f"        ✅ Cases loaded from file successfully ({len(self.cases)} Case objects{classification_msg})")
+        print(f"        ✅ Cases loaded from file successfully ({len(self.cases)} Case objects)")
         return self.cases
 
+    def classify_all_cases_via_llm(self, llm_client: 'LLMClient') -> Dict[str, Any]:
+        """
+        对所有已加载的cases进行LLM分类
+        
+        Args:
+            llm_client: LLM客户端
+            
+        Returns:
+            分类结果统计字典，包含成功/失败数量和详细信息
+        """
+        if not self.cases:
+            raise ValueError("No cases loaded. Call build_cases_via_llm or build_cases_via_file first.")
+        
+        print(f"    📊 Classifying {len(self.cases)} cases via LLM...")
+        
+        results = {
+            "total_cases": len(self.cases),
+            "successful_classifications": 0,
+            "failed_classifications": 0,
+            "failures": []
+        }
+        
+        for case_obj in self.cases:
+            print(f"        📊 Classifying case {case_obj.case_id}")
+            try:
+                case_obj.classify_case(llm_client)
+                results["successful_classifications"] += 1
+            except Exception as e:
+                print(f"        ⚠️  Classification failed for {case_obj.case_id}: {e}")
+                results["failed_classifications"] += 1
+                results["failures"].append({
+                    "case_id": case_obj.case_id,
+                    "error": str(e)
+                })
+        
+        success_rate = (results["successful_classifications"] / results["total_cases"]) * 100
+        print(f"    ✅ Classification complete: {results['successful_classifications']}/{results['total_cases']} successful ({success_rate:.1f}%)")
+        
+        return results
+
+    def classify_all_cases_via_file(self, output_dir: str) -> Dict[str, Any]:
+        """
+        从JSON文件更新所有cases的分类信息，不进行LLM调用
+        
+        Args:
+            output_dir: 输出目录路径
+            
+        Returns:
+            更新结果统计字典，包含成功/失败数量和详细信息
+        """
+        if not self.cases:
+            raise ValueError("No cases loaded. Call build_cases_via_llm or build_cases_via_file first.")
+        
+        import json
+        
+        # 构建文件路径
+        session_folder = os.path.join(output_dir, f"session_{self.session}")
+        channel_name = Utils.format_channel_for_display(self.channel_url)
+        channel_cases_file = os.path.join(session_folder, f"cases_{channel_name}.json")
+        
+        if not os.path.exists(channel_cases_file):
+            raise FileNotFoundError(f"JSON file not found: {channel_cases_file}")
+        
+        print(f"    📄 Updating {len(self.cases)} cases classification from file...")
+        
+        # 加载JSON数据
+        try:
+            with open(channel_cases_file, 'r', encoding='utf-8') as f:
+                file_cases_data = json.load(f)
+        except Exception as e:
+            raise RuntimeError(f"Failed to load JSON file: {e}")
+        
+        # 创建case_id到文件数据的映射
+        file_cases_by_id = {case_data.get('case_id'): case_data for case_data in file_cases_data}
+        
+        results = {
+            "total_cases": len(self.cases),
+            "updated_cases": 0,
+            "not_found_in_file": 0,
+            "not_found_cases": []
+        }
+        
+        for case_obj in self.cases:
+            case_id = case_obj.case_id
+            if case_id in file_cases_by_id:
+                file_case_data = file_cases_by_id[case_id]
+                
+                # 更新分类相关字段
+                case_obj.main_category = file_case_data.get('main_category', 'unknown')
+                case_obj.sub_category = file_case_data.get('sub_category', 'unknown')
+                case_obj.classification_reasoning = file_case_data.get('classification_reasoning', 'N/A')
+                case_obj.classification_confidence = file_case_data.get('classification_confidence', 0.0)
+                case_obj.classification_indicators = file_case_data.get('classification_indicators', [])
+                
+                results["updated_cases"] += 1
+                print(f"        📄 Updated classification for case {case_id}")
+            else:
+                results["not_found_in_file"] += 1
+                results["not_found_cases"].append(case_id)
+                print(f"        ⚠️  Case {case_id} not found in file data")
+        
+        update_rate = (results["updated_cases"] / results["total_cases"]) * 100
+        print(f"    ✅ Classification update complete: {results['updated_cases']}/{results['total_cases']} updated ({update_rate:.1f}%)")
+        
+        return results
 
     def save_results_to_json(self, output_dir: str) -> None:
         """Save channel cases to JSON file"""

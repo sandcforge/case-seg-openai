@@ -221,22 +221,23 @@ class Session:
             channel_cases_file = os.path.join(self.output_folder, f"cases_{channel_name}.json")
             
             # Create Channel instance
-            channel = Channel(channel_df, channel_url, self.session_name, self.chunk_size, self.overlap, self.force_classification)
+            channel = Channel(channel_df, channel_url, self.session_name, self.chunk_size, self.overlap, self.force_classification, self.enable_vision_processing)
             
             if os.path.exists(channel_cases_file):
                 print(f"        ⏭️  Loading existing results from file")
-                channel.build_cases_via_file(self.output_dir, llm_client)
-            else:
-                # Process vision analysis if enabled
-                if self.enable_vision_processing:
-                    try:
-                        channel.process_file_type_messages(llm_client)
-                    except Exception as e:
-                        print(f"        ⚠️  Vision processing failed: {e}")
-                        print(f"            Continuing without vision processing...")
+                channel.build_cases_via_file(self.output_dir)
                 
-                # Process channel with full pipeline
-                channel.build_cases_simple(llm_client)
+                # Force re-classification if enabled
+                if self.force_classification:
+                    print(f"        🔄 Force re-classification enabled")
+                    channel.classify_all_cases_via_llm(llm_client)
+                else :
+                    channel.classify_all_cases_via_file(self.output_dir)
+            else:
+                # Process channel with full pipeline (includes vision processing if enabled)
+                channel.build_cases_via_llm(llm_client)
+                channel.classify_all_cases_via_llm(llm_client)
+
                 
             # Save channel results
             print(f"    💾 Saving results...")

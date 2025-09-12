@@ -41,13 +41,13 @@ def main() -> None:
     parser.add_argument(
         '--chunk-size', '-c',
         type=int,
-        default=80,
+        default=60,
         help='Chunk size for segmentation (default: 80)'
     )
     parser.add_argument(
         '--overlap', '-l',
         type=int,
-        default=20,
+        default=10,
         help='Overlap size between chunks, must be < chunk_size/3 (default: 20)'
     )
     parser.add_argument(
