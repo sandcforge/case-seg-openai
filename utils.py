@@ -5,6 +5,10 @@ Utility functions and classes for the customer support message segmentation syst
 This module contains common utility functions that are used across different modules.
 """
 
+import requests
+import os
+from dotenv import load_dotenv
+
 
 class Utils:
     """Utility class containing static helper methods"""
@@ -35,3 +39,67 @@ class Utils:
             formatted_line = f"{row['msg_ch_idx']} | {row['Sender ID']} | {row['role']} | {row['Created Time']} | {message_text}"
             formatted_lines.append(formatted_line)
         return '\n'.join(formatted_lines)
+    
+    @staticmethod
+    def get_aloy_token() -> str:
+        """
+        Get Firebase ID token for Aloy authentication using environment variables
+        
+        Required environment variables:
+        - FIREBASE_API_KEY: Firebase project API key
+        - FIREBASE_EMAIL: User email for authentication
+        - FIREBASE_PASSWORD: User password for authentication
+        
+        Returns:
+            Firebase ID token string
+            
+        Raises:
+            ValueError: If required environment variables are missing
+            RuntimeError: If authentication request fails
+        """
+        # Load environment variables
+        load_dotenv()
+        
+        # Get required environment variables
+        api_key = os.getenv("FIREBASE_API_KEY")
+        email = os.getenv("FIREBASE_EMAIL")
+        password = os.getenv("FIREBASE_PASSWORD")
+        
+        # Check for missing environment variables
+        missing_vars = []
+        if not api_key:
+            missing_vars.append("FIREBASE_API_KEY")
+        if not email:
+            missing_vars.append("FIREBASE_EMAIL")
+        if not password:
+            missing_vars.append("FIREBASE_PASSWORD")
+        
+        if missing_vars:
+            raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+        
+        # Prepare Firebase authentication request
+        url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={api_key}"
+        payload = {
+            "email": email,
+            "password": password,
+            "returnSecureToken": True
+        }
+        
+        try:
+            # Make authentication request
+            response = requests.post(url, json=payload)
+            response.raise_for_status()
+            
+            # Parse response
+            data = response.json()
+            id_token = data.get("idToken")
+            
+            if not id_token:
+                raise RuntimeError("Firebase authentication succeeded but no idToken was returned")
+            
+            return id_token
+            
+        except requests.RequestException as e:
+            raise RuntimeError(f"Firebase authentication request failed: {e}")
+        except (KeyError, ValueError) as e:
+            raise RuntimeError(f"Failed to parse Firebase authentication response: {e}")
