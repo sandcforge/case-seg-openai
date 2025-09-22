@@ -12,10 +12,8 @@ This module contains the Session class that orchestrates the complete processing
 import os
 import json
 from datetime import datetime
-from typing import List, Dict, Any, Optional
-from collections import Counter
+from typing import List, Optional
 import pandas as pd # type: ignore
-import numpy as np # type: ignore
 
 # Local imports
 from channel import Channel
@@ -84,7 +82,7 @@ class Session:
         1. File data processing (cross-channel)
         2. Session folder setup
         3. Individual channel processing
-        4. Cross-channel statistics generation
+        4. Export all cases to CSV
         """
         print(f"🚀 Starting pipeline session: {self.session_name}")
         
@@ -100,8 +98,13 @@ class Session:
             # Stage 3: Initialize LLM client and process channels
             self.process_channels()
             
-            # Stage 4: Generate cross-channel statistics
-            self.generate_statistics()
+            # Stage 4: Export all cases to CSV
+            print(f"\n📄 Exporting all cases to CSV...")
+            try:
+                csv_path = self.save_all_cases_to_csv()
+                print(f"✅ CSV export complete: {csv_path}")
+            except Exception as e:
+                print(f"⚠️  CSV export failed: {e}")
             
             print(f"\n✅ Pipeline complete!")
             
@@ -371,288 +374,6 @@ class Session:
         print(f"Processed {len(self.channels)} channels")
         print(f"Results saved to timestamped session folders in output directory")
         print(f"Each session contains JSON and CSV files for successfully saved channels")
-    
-    def generate_statistics(self) -> None:
-        """
-        Generate comprehensive statistics across all channels.
-        
-        Migrated from main.py statistics generation logic.
-        """
-        try:
-            print(f"\n📊 Generating comprehensive statistics...")
-            
-            # Collect all cases from all channels
-            all_cases = []
-            for channel in self.channels:
-                if hasattr(channel, 'cases') and channel.cases:
-                    all_cases.extend(channel.cases)
-            
-            if all_cases:
-                # Calculate statistics
-                stats_result = self._calculate_comprehensive_stats(all_cases)
-                
-                # Print summary report to console
-                self._print_summary_report(stats_result)
-
-                # Export all cases to CSV
-                print(f"    📄 Exporting all cases to CSV...")
-                try:
-                    csv_path = self.save_all_cases_to_csv()
-                    print(f"    ✅ CSV export complete")
-                except Exception as e:
-                    print(f"    ⚠️  CSV export failed: {e}")
-                
-                print(f"    ✅ Statistics analysis complete")
-            else:
-                print(f"    ⚠️  No cases found for statistical analysis")
-                
-        except Exception as stats_error:
-            print(f"    ❌ Error during statistics generation: {str(stats_error)}")
-            print(f"    Pipeline completed successfully, but statistics failed")
-    
-    def _calculate_comprehensive_stats(self, all_cases: List) -> Dict[str, Any]:
-        """
-        Calculate comprehensive statistics for all cases.
-        
-        Args:
-            all_cases: List of all Case objects
-            
-        Returns:
-            Dictionary containing all statistical analyses
-        """
-        print(f"📊 Calculating comprehensive statistics for {len(all_cases)} cases...")
-        
-        # Basic counts
-        total_cases = len(all_cases)
-        
-        # Calculate category statistics
-        category_stats = self._calculate_category_stats(all_cases)
-        
-        # Calculate performance metrics statistics
-        metrics_stats = self._calculate_metrics_stats(all_cases)
-        
-        # Calculate first contact resolution statistics
-        fcr_stats = self._calculate_fcr_stats(all_cases)
-        
-        # Compile comprehensive results
-        stats_result = {
-            "summary": {
-                "total_cases": total_cases,
-                "analysis_timestamp": pd.Timestamp.now().isoformat()
-            },
-            "category_distribution": category_stats,
-            "performance_metrics": metrics_stats,
-            "first_contact_resolution": fcr_stats
-        }
-        
-        return stats_result
-    
-    def _calculate_category_stats(self, all_cases: List) -> Dict[str, Any]:
-        """Calculate category distribution statistics."""
-        print("    📈 Analyzing category distributions...")
-        
-        # Main category distribution
-        main_categories = [case.main_category for case in all_cases]
-        main_category_counts = Counter(main_categories)
-        main_category_percentages = {
-            category: (count / len(main_categories)) * 100 
-            for category, count in main_category_counts.items()
-        }
-        
-        # Sub category distribution
-        sub_categories = [case.sub_category for case in all_cases]
-        sub_category_counts = Counter(sub_categories)
-        sub_category_percentages = {
-            category: (count / len(sub_categories)) * 100 
-            for category, count in sub_category_counts.items()
-        }
-        
-        # Build hierarchical mapping
-        main_to_sub_mapping = {}
-        for case in all_cases:
-            main_cat = case.main_category
-            sub_cat = case.sub_category
-            
-            if main_cat not in main_to_sub_mapping:
-                main_to_sub_mapping[main_cat] = {}
-            
-            if sub_cat not in main_to_sub_mapping[main_cat]:
-                main_to_sub_mapping[main_cat][sub_cat] = 0
-            
-            main_to_sub_mapping[main_cat][sub_cat] += 1
-        
-        return {
-            "main_category": {
-                "counts": dict(main_category_counts),
-                "percentages": main_category_percentages,
-                "total_analyzed": len(main_categories)
-            },
-            "sub_category": {
-                "counts": dict(sub_category_counts),
-                "percentages": sub_category_percentages,
-                "total_analyzed": len(sub_categories)
-            },
-            "hierarchical": main_to_sub_mapping
-        }
-    
-    def _calculate_metrics_stats(self, all_cases: List) -> Dict[str, Any]:
-        """Calculate performance metrics statistics with invalid data filtering."""
-        print("    ⏱️  Analyzing performance metrics...")
-        
-        metrics_stats = {}
-        
-        # Define metrics to analyze
-        metrics = {
-            'handle_time': 'handle_time',
-            'first_res_time': 'first_res_time', 
-            'usr_msg_num': 'usr_msg_num'
-        }
-        
-        for metric_name, case_attr in metrics.items():
-            # Extract valid values (filter out -1)
-            values = []
-            for case in all_cases:
-                value = getattr(case, case_attr)
-                if value != -1:  # Only include valid data
-                    values.append(value)
-            
-            if values:
-                # Calculate percentiles
-                p5 = np.percentile(values, 5)
-                p50 = np.percentile(values, 50)  # median
-                p95 = np.percentile(values, 95)
-                
-                metrics_stats[metric_name] = {
-                    "valid_cases": len(values),
-                    "total_cases": len(all_cases),
-                    "validity_rate": (len(values) / len(all_cases)) * 100,
-                    "percentiles": {
-                        "P5": round(p5, 2),
-                        "P50": round(p50, 2),
-                        "P95": round(p95, 2)
-                    },
-                    "basic_stats": {
-                        "min": round(min(values), 2),
-                        "max": round(max(values), 2),
-                        "mean": round(np.mean(values), 2),
-                        "std": round(np.std(values), 2)
-                    }
-                }
-            else:
-                metrics_stats[metric_name] = {
-                    "valid_cases": 0,
-                    "total_cases": len(all_cases),
-                    "validity_rate": 0.0,
-                    "percentiles": None,
-                    "basic_stats": None
-                }
-        
-        return metrics_stats
-    
-    def _calculate_fcr_stats(self, all_cases: List) -> Dict[str, Any]:
-        """Calculate first contact resolution statistics."""
-        print("    ✅ Analyzing first contact resolution rates...")
-        
-        # Extract valid FCR values (filter out -1)
-        fcr_values = []
-        for case in all_cases:
-            if case.first_contact_resolution != -1:
-                fcr_values.append(case.first_contact_resolution)
-        
-        if fcr_values:
-            resolved_count = sum(1 for value in fcr_values if value == 1)
-            resolution_rate = (resolved_count / len(fcr_values)) * 100
-            
-            return {
-                "valid_cases": len(fcr_values),
-                "total_cases": len(all_cases),
-                "validity_rate": (len(fcr_values) / len(all_cases)) * 100,
-                "resolved_cases": resolved_count,
-                "unresolved_cases": len(fcr_values) - resolved_count,
-                "resolution_rate_percent": round(resolution_rate, 2)
-            }
-        else:
-            return {
-                "valid_cases": 0,
-                "total_cases": len(all_cases),
-                "validity_rate": 0.0,
-                "resolved_cases": 0,
-                "unresolved_cases": 0,
-                "resolution_rate_percent": 0.0
-            }
-    
-    def _print_summary_report(self, stats_result: Dict[str, Any]) -> None:
-        """Print a formatted summary report to console."""
-        print(f"\n📊 CASE STATISTICS SUMMARY")
-        print(f"=" * 50)
-        
-        # Basic summary
-        summary = stats_result["summary"]
-        print(f"Total Cases Analyzed: {summary['total_cases']}")
-        
-        # Category distribution
-        print(f"\n📈 CATEGORY DISTRIBUTION")
-        print(f"-" * 30)
-        main_cat = stats_result["category_distribution"]["main_category"]
-        print(f"Main Categories:")
-        for category, percentage in main_cat["percentages"].items():
-            count = main_cat["counts"][category]
-            print(f"  {category}: {count} cases ({percentage:.1f}%)")
-        
-        # Display hierarchical sub categories
-        print(f"\nHierarchical Category Breakdown:")
-        main_cat = stats_result["category_distribution"]["main_category"]
-        main_to_sub_mapping = stats_result["category_distribution"]["hierarchical"]
-        total_cases = stats_result["summary"]["total_cases"]
-        
-        # Sort main categories by count (descending)
-        sorted_main_cats = sorted(main_cat["counts"].items(), key=lambda x: x[1], reverse=True)
-        
-        for main_category, main_count in sorted_main_cats:
-            main_percentage = main_cat["percentages"][main_category]
-            print(f"  {main_category}: {main_count} cases ({main_percentage:.1f}%)")
-            
-            if main_category in main_to_sub_mapping:
-                # Sort sub categories by count (descending)
-                sorted_sub_cats = sorted(main_to_sub_mapping[main_category].items(), key=lambda x: x[1], reverse=True)
-                
-                for sub_category, sub_count in sorted_sub_cats:
-                    sub_percentage = (sub_count / total_cases) * 100
-                    print(f"    ├─ {sub_category}: {sub_count} cases ({sub_percentage:.1f}%)")
-        
-        # Performance metrics
-        print(f"\n⏱️  PERFORMANCE METRICS")
-        print(f"-" * 30)
-        print(f"Metric Definitions:")
-        print(f"  • handle_time: Time between first and last message in minutes")
-        print(f"  • first_res_time: Support response time in minutes")
-        print(f"  • usr_msg_num: Count of user messages")
-        print(f"  (Value of -1 indicates not processed/invalid data)")
-        print()
-        metrics = stats_result["performance_metrics"]
-        
-        for metric_name, data in metrics.items():
-            print(f"{metric_name.replace('_', ' ').title()}:")
-            if data["percentiles"]:
-                print(f"  Valid Cases: {data['valid_cases']}/{data['total_cases']} ({data['validity_rate']:.1f}%)")
-                p = data["percentiles"]
-                print(f"  P5: {p['P5']}, P50: {p['P50']}, P95: {p['P95']}")
-                b = data["basic_stats"]
-                print(f"  Min: {b['min']}, Max: {b['max']}, Mean: {b['mean']}, Std: {b['std']}")
-            else:
-                print(f"  No valid data available")
-        
-        # First contact resolution
-        print(f"\n✅ FIRST CONTACT RESOLUTION")
-        print(f"-" * 30)
-        fcr = stats_result["first_contact_resolution"]
-        if fcr["valid_cases"] > 0:
-            print(f"Valid Cases: {fcr['valid_cases']}/{fcr['total_cases']} ({fcr['validity_rate']:.1f}%)")
-            print(f"Resolution Rate: {fcr['resolution_rate_percent']:.1f}% ({fcr['resolved_cases']}/{fcr['valid_cases']} cases)")
-        else:
-            print(f"No valid FCR data available")
-        
-        print(f"\n" + "=" * 50)
     
     def save_all_cases_to_csv(self, output_filename: str = None) -> str:
         """
