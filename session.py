@@ -76,7 +76,7 @@ class Session:
         # Cross-channel collections
         self.channels: List[Channel] = []
     
-    def run(self) -> None:
+    def cs_mbr(self) -> None:
         """
         Execute the complete processing pipeline.
         
@@ -104,6 +104,79 @@ class Session:
             self.generate_statistics()
             
             print(f"\n✅ Pipeline complete!")
+            
+        except Exception as e:
+            print(f"Error: {e}")
+            exit(1)
+    
+    def cs_qa(self) -> None:
+        """
+        Execute QA processing pipeline.
+        
+        QA-specific pipeline for question answering tasks.
+        """
+        print(f"🚀 Starting QA pipeline session: {self.session_name}")
+        
+        try:
+            # Stage 1: Process file data across all channels
+            if not self.process_file_data():
+                print("Error: File processing failed")
+                exit(1)
+            
+            # Stage 2: Create session folder structure
+            self.create_session_folder()
+            
+            # Stage 3: Initialize LLM client and process channels
+            self.process_channels()
+
+            # Stage 4: Find cases matching specific criteria
+            print(f"\n🔍 Filtering cases by category criteria...")
+            
+            # Collect all cases from all channels
+            all_cases = []
+            for channel in self.channels:
+                if hasattr(channel, 'cases') and channel.cases:
+                    all_cases.extend(channel.cases)
+            
+            # Filter cases by exact category criteria and specific channels
+            filtered_cases = []
+            target_main_category = "Order & Post-sale"
+            target_sub_category = "Modify Order / Modify Address / Modify Shipping to local pick up"
+            
+            # Define target channels from debug_output
+            target_channels = [
+                "sendbird_group_channel_356380577_45252a653c9cacdde70fb496bd98dea1b0b9cc77",
+                "sendbird_group_channel_409455858_71425f1073aa9a8c3a745025409e9e82f8e0cb52",
+                "sendbird_group_channel_476430720_c6fe5cbfaf4b3f175abed1e448c2d19b90c52cca",
+                "sendbird_group_channel_215482988_c9ac45aa4b3dc2dfd42df0c8bc3b3e080e2a4959",
+                "sendbird_group_channel_215482988_dd7d2885f740f3e748edb8b41abbe5f36b0bff2f",
+                "sendbird_group_channel_215482988_03e31b162759f2869f99bca09d3d902743e47fe0"
+            ]
+            
+            for case in all_cases:
+                if (case.main_category == target_main_category and 
+                    case.sub_category == target_sub_category and
+                    case.channel_url in target_channels):
+                    filtered_cases.append(case)
+            
+            # Display results
+            print(f"🔍 Found {len(filtered_cases)} cases with:")
+            print(f"   Main Category: {target_main_category}")
+            print(f"   Sub Category: {target_sub_category}")
+            print(f"   Filtered to {len(target_channels)} specific channels from debug_output")
+            
+            if filtered_cases:
+                print(f"\nAll {len(filtered_cases)} matching cases:")
+                for i, case in enumerate(filtered_cases, 1):
+                    print(f"  {i}. Case ID: {case.case_id}")
+                    print(f"     Channel: {case.channel_url}")
+                    print(f"     Summary: {case.summary[:100]}...")
+                    print(f"     Status: {case.status}")
+                    print()
+            else:
+                print(f"No cases found matching the criteria.")
+            
+            print(f"\n✅ QA Pipeline complete!")
             
         except Exception as e:
             print(f"Error: {e}")
@@ -191,8 +264,7 @@ class Session:
             print(f"                Channel: {Utils.format_channel_for_display(channel_url)} - {len(channel_df)} messages")
         
         return True
-    
-    
+
     def create_session_folder(self) -> None:
         """Create session output folder structure."""
         os.makedirs(self.output_folder, exist_ok=True)

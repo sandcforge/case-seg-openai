@@ -5,9 +5,9 @@ Utility functions and classes for the customer support message segmentation syst
 This module contains common utility functions that are used across different modules.
 """
 
-import requests
+import requests # type: ignore
 import os
-from dotenv import load_dotenv
+from dotenv import load_dotenv # type: ignore
 
 
 class Utils:

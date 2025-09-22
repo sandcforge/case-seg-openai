@@ -70,6 +70,12 @@ def main() -> None:
         '--session', '-s',
         help='Session name for output organization (default: auto-generated timestamp)'
     )
+    parser.add_argument(
+        '--function', '-f',
+        choices=['mbr', 'qa'],
+        default='mbr',
+        help='Choose which session function to run (choices: mbr, qa)'
+    )
     
     args = parser.parse_args()
     
@@ -84,7 +90,11 @@ def main() -> None:
         enable_review=args.enable_review,
         force_classification=args.force_classification
     )
-    session.run()
+    # Execute selected function
+    if args.function == 'mbr':
+        session.cs_mbr()
+    elif args.function == 'qa':
+        session.cs_qa()
 
 
 if __name__ == '__main__':
