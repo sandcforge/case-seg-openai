@@ -126,22 +126,8 @@ class Session:
             # Stage 2: Create session folder structure
             self.create_session_folder()
             
-            # Stage 3: Initialize LLM client and process channels
-            self.process_channels()
-
-            # Stage 4: Find cases matching specific criteria
-            print(f"\n🔍 Filtering cases by category criteria...")
-            
-            # Collect all cases from all channels
-            all_cases = []
-            for channel in self.channels:
-                if hasattr(channel, 'cases') and channel.cases:
-                    all_cases.extend(channel.cases)
-            
-            # Filter cases by exact category criteria and specific channels
-            filtered_cases = []
-            target_main_category = "Order & Post-sale"
-            target_sub_category = "Modify Order / Modify Address / Modify Shipping to local pick up"
+            # Stage 3: Process only target channels from debug_output
+            print(f"\n🔄 Processing target channels...")
             
             # Define target channels from debug_output
             target_channels = [
@@ -153,25 +139,63 @@ class Session:
                 "sendbird_group_channel_215482988_03e31b162759f2869f99bca09d3d902743e47fe0"
             ]
             
+            # Initialize LLM client
+            llm_client = LLMClient(model=self.model)
+            print(f"LLM Client initialized with model: {self.model}")
+            
+            # Process only target channels
+            for channel_idx, channel_url in enumerate(target_channels, 1):
+                if channel_url in self.df_clean['Channel URL'].values:
+                    channel_df = self.df_clean[self.df_clean['Channel URL'] == channel_url]
+                    print(f"🔄 Channel {channel_idx}/{len(target_channels)}: {Utils.format_channel_for_display(channel_url)} ({len(channel_df)} messages)")
+                    channel = self.build_one_channel(channel_url, llm_client)
+                    self.channels.append(channel)
+                else:
+                    print(f"⚠️  Channel {channel_idx}/{len(target_channels)}: {Utils.format_channel_for_display(channel_url)} - not found in data")
+
+            # Stage 4: Find cases matching specific criteria
+            print(f"\n🔍 Filtering cases by category criteria...")
+            
+            # Collect all cases from processed channels
+            all_cases = []
+            for channel in self.channels:
+                if hasattr(channel, 'cases') and channel.cases:
+                    all_cases.extend(channel.cases)
+            
+            # Filter cases by exact category criteria
+            filtered_cases = []
+            target_main_category = "Order & Post-sale"
+            target_sub_category = "Modify Order / Modify Address / Modify Shipping to local pick up"
+            
             for case in all_cases:
                 if (case.main_category == target_main_category and 
-                    case.sub_category == target_sub_category and
-                    case.channel_url in target_channels):
+                    case.sub_category == target_sub_category):
                     filtered_cases.append(case)
             
             # Display results
             print(f"🔍 Found {len(filtered_cases)} cases with:")
             print(f"   Main Category: {target_main_category}")
             print(f"   Sub Category: {target_sub_category}")
-            print(f"   Filtered to {len(target_channels)} specific channels from debug_output")
+            print(f"   Processed {len(target_channels)} specific channels from debug_output")
             
             if filtered_cases:
-                print(f"\nAll {len(filtered_cases)} matching cases:")
+                print(f"\nAll {len(filtered_cases)} matching cases with their messages:")
                 for i, case in enumerate(filtered_cases, 1):
                     print(f"  {i}. Case ID: {case.case_id}")
                     print(f"     Channel: {case.channel_url}")
-                    print(f"     Summary: {case.summary[:100]}...")
                     print(f"     Status: {case.status}")
+                    print(f"     Summary: {case.summary[:100]}...")
+                    
+                    # Display all messages in this case
+                    if case.messages is not None and not case.messages.empty:
+                        print(f"     Messages ({len(case.messages)} total):")
+                        for msg_idx, msg_row in case.messages.iterrows():
+                            message = msg_row.get('Message', 'N/A')
+                            role = msg_row.get('role', 'N/A')
+                            
+                            print(f"       {role}: {message}")
+                    else:
+                        print(f"     Messages: No messages available")
                     print()
             else:
                 print(f"No cases found matching the criteria.")
@@ -269,6 +293,46 @@ class Session:
         """Create session output folder structure."""
         os.makedirs(self.output_folder, exist_ok=True)
     
+    def build_one_channel(self, channel_url: str, llm_client) -> 'Channel':
+        """
+        Build and process a single channel.
+        
+        Args:
+            channel_url: The channel URL to process
+            llm_client: LLM client instance for processing
+            
+        Returns:
+            Processed Channel instance
+        """
+        # Extract channel data
+        channel_df = self.df_clean[self.df_clean['Channel URL'] == channel_url].copy()
+        # Reset msg_ch_idx to ensure it starts from 0 for each channel
+        channel_df['msg_ch_idx'] = range(len(channel_df))
+        
+        # Check if channel results already exist
+        channel_name = Utils.format_channel_for_display(channel_url)
+        channel_cases_file = os.path.join(self.output_folder, f"cases_{channel_name}.json")
+        
+        # Create Channel instance
+        channel = Channel(channel_df, channel_url, self.session_name, self.chunk_size, self.overlap, self.force_classification, self.enable_vision_processing)
+        
+        if os.path.exists(channel_cases_file):
+            print(f"        ⏭️  Loading existing results from file")
+            channel.build_cases_via_file(self.output_dir)
+            
+            # Force re-classification if enabled
+            if self.force_classification:
+                print(f"        🔄 Force re-classification enabled")
+                channel.classify_all_cases_via_llm(llm_client)
+            else:
+                channel.classify_all_cases_via_file(self.output_dir)
+        else:
+            # Process channel with full pipeline (includes vision processing if enabled)
+            channel.build_cases_via_llm(llm_client)
+            channel.classify_all_cases_via_llm(llm_client)
+        
+        return channel
+    
     def process_channels(self) -> None:
         """
         Process each channel individually and collect results.
@@ -283,34 +347,12 @@ class Session:
         channel_urls = self.df_clean['Channel URL'].unique()
         for channel_idx, channel_url in enumerate(channel_urls):
             channel_df = self.df_clean[self.df_clean['Channel URL'] == channel_url].copy()
-            # Reset msg_ch_idx to ensure it starts from 0 for each channel
-            channel_df['msg_ch_idx'] = range(len(channel_df))
             
             print(f"🔄 Channel {channel_idx + 1}/{len(channel_urls)}: {Utils.format_channel_for_display(channel_url)} ({len(channel_df)} messages)")
             
-            # Check if channel results already exist
-            channel_name = Utils.format_channel_for_display(channel_url)
-            channel_cases_file = os.path.join(self.output_folder, f"cases_{channel_name}.json")
+            # Build and process the channel
+            channel = self.build_one_channel(channel_url, llm_client)
             
-            # Create Channel instance
-            channel = Channel(channel_df, channel_url, self.session_name, self.chunk_size, self.overlap, self.force_classification, self.enable_vision_processing)
-            
-            if os.path.exists(channel_cases_file):
-                print(f"        ⏭️  Loading existing results from file")
-                channel.build_cases_via_file(self.output_dir)
-                
-                # Force re-classification if enabled
-                if self.force_classification:
-                    print(f"        🔄 Force re-classification enabled")
-                    channel.classify_all_cases_via_llm(llm_client)
-                else :
-                    channel.classify_all_cases_via_file(self.output_dir)
-            else:
-                # Process channel with full pipeline (includes vision processing if enabled)
-                channel.build_cases_via_llm(llm_client)
-                channel.classify_all_cases_via_llm(llm_client)
-
-                
             # Save channel results
             print(f"    💾 Saving results...")
             try:

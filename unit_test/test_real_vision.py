@@ -6,7 +6,7 @@ This script loads real images from support_messages_multi_ch.csv and calls
 the LLM to analyze them with context using Session and VisionProcessor classes.
 """
 
-import pandas as pd
+import pandas as pd # type: ignore
 import json
 import os
 from pathlib import Path
