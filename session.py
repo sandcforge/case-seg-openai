@@ -129,74 +129,76 @@ class Session:
             # Stage 2: Create session folder structure
             self.create_session_folder()
             
-            # Stage 3: Process only target channels from debug_output
-            print(f"\n🔄 Processing target channels...")
-            
-            # Define target channels from debug_output
-            target_channels = [
-                "sendbird_group_channel_356380577_45252a653c9cacdde70fb496bd98dea1b0b9cc77",
-                "sendbird_group_channel_409455858_71425f1073aa9a8c3a745025409e9e82f8e0cb52",
-                "sendbird_group_channel_476430720_c6fe5cbfaf4b3f175abed1e448c2d19b90c52cca",
-                "sendbird_group_channel_215482988_c9ac45aa4b3dc2dfd42df0c8bc3b3e080e2a4959",
-                "sendbird_group_channel_215482988_dd7d2885f740f3e748edb8b41abbe5f36b0bff2f",
-                "sendbird_group_channel_215482988_03e31b162759f2869f99bca09d3d902743e47fe0"
-            ]
-            
+            # Stage 3: Process all channels
+            print(f"\n🔄 Processing all channels...")
+
             # Initialize LLM client
             llm_client = LLMClient(model=self.model)
             print(f"LLM Client initialized with model: {self.model}")
-            
-            # Process only target channels
-            for channel_idx, channel_url in enumerate(target_channels, 1):
-                if channel_url in self.df_clean['Channel URL'].values:
-                    channel_df = self.df_clean[self.df_clean['Channel URL'] == channel_url]
-                    print(f"🔄 Channel {channel_idx}/{len(target_channels)}: {Utils.format_channel_for_display(channel_url)} ({len(channel_df)} messages)")
-                    channel = self.build_one_channel(channel_url, llm_client)
-                    self.channels.append(channel)
-                else:
-                    print(f"⚠️  Channel {channel_idx}/{len(target_channels)}: {Utils.format_channel_for_display(channel_url)} - not found in data")
 
-            # Stage 4: Find cases matching specific criteria
+            # Process all channels
+            channel_urls = self.df_clean['Channel URL'].unique()
+            for channel_idx, channel_url in enumerate(channel_urls, 1):
+                channel_df = self.df_clean[self.df_clean['Channel URL'] == channel_url]
+                print(f"🔄 Channel {channel_idx}/{len(channel_urls)}: {Utils.format_channel_for_display(channel_url)} ({len(channel_df)} messages)")
+                channel = self.build_one_channel(channel_url, llm_client)
+                self.channels.append(channel)
+
+            # Stage 4: Find first 10 cases matching specific criteria
             print(f"\n🔍 Filtering cases by category criteria...")
-            
+
             # Collect all cases from processed channels
             all_cases = []
             for channel in self.channels:
                 if hasattr(channel, 'cases') and channel.cases:
                     all_cases.extend(channel.cases)
-            
-            # Filter cases by exact category criteria
+
+            # Filter cases by exact category criteria and take first 10
             filtered_cases = []
             target_main_category = "Order & Post-sale"
             target_sub_category = "Modify Order / Modify Address / Modify Shipping to local pick up"
-            
+
             for case in all_cases:
-                if (case.main_category == target_main_category and 
+                if (case.main_category == target_main_category and
                     case.sub_category == target_sub_category):
                     filtered_cases.append(case)
-            
+                    if len(filtered_cases) == 10:  # Stop after collecting 10 cases
+                        break
+
             # Display results
-            print(f"🔍 Found {len(filtered_cases)} cases with:")
+            print(f"🔍 Found {len(filtered_cases)} cases (showing first 10) with:")
             print(f"   Main Category: {target_main_category}")
             print(f"   Sub Category: {target_sub_category}")
-            print(f"   Processed {len(target_channels)} specific channels from debug_output")
-            
+            print(f"   Processed {len(channel_urls)} channels total")
+
             if filtered_cases:
-                print(f"\nAll {len(filtered_cases)} matching cases with their messages:")
+                print(f"\nFirst {len(filtered_cases)} matching cases with their messages:")
                 for i, case in enumerate(filtered_cases, 1):
                     print(f"  {i}. Case ID: {case.case_id}")
                     print(f"     Channel: {case.channel_url}")
                     print(f"     Status: {case.status}")
-                    print(f"     Summary: {case.summary[:100]}...")
+                    print(f"     Summary: {case.summary}")
                     
-                    # Display all messages in this case
+                    # Display all messages in this case as escaped string
                     if case.messages is not None and not case.messages.empty:
                         print(f"     Messages ({len(case.messages)} total):")
+                        
+                        # Create conversation string with escaped characters
+                        conversation_parts = []
                         for msg_idx, msg_row in case.messages.iterrows():
-                            message = msg_row.get('Message', 'N/A')
-                            role = msg_row.get('role', 'N/A')
+                            message = msg_row.get('Message', '')
+                            role = msg_row.get('role', '')
                             
-                            print(f"       {role}: {message}")
+                            # Handle empty/nan messages
+                            if pd.isna(message) or str(message).strip() == '' or str(message).lower() == 'nan':
+                                continue  # Skip empty messages
+                            
+                            # Escape special characters in the message
+                            escaped_message = str(message).replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+                            conversation_parts.append(f"{role}: {escaped_message}")
+                        
+                        conversation_string = "\\n".join(conversation_parts)
+                        print(f'     Conversation: "{conversation_string}"')
                     else:
                         print(f"     Messages: No messages available")
                     print()

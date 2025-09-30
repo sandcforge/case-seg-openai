@@ -18,9 +18,19 @@ from dotenv import load_dotenv # type: ignore
 
 # Local imports
 from session import Session
+from utils import Utils
 
 # Load environment variables
 load_dotenv()
+
+
+def generate_firebase_token() -> None:
+    """Generate Firebase ID token using credentials from environment variables"""
+    try:
+        id_token = Utils.get_aloy_token()
+        print(f"✅ Firebase ID Token\n{id_token}")
+    except (ValueError, RuntimeError) as e:
+        print(f"❌ Error: {e}")
 
 
 def main() -> None:
@@ -72,9 +82,9 @@ def main() -> None:
     )
     parser.add_argument(
         '--function', '-f',
-        choices=['mbr', 'qa'],
+        choices=['mbr', 'qa', 'token'],
         default='mbr',
-        help='Choose which session function to run (choices: mbr, qa)'
+        help='Choose which session function to run (choices: mbr, qa, token)'
     )
     
     args = parser.parse_args()
@@ -95,6 +105,8 @@ def main() -> None:
         session.cs_mbr()
     elif args.function == 'qa':
         session.cs_qa()
+    elif args.function == 'token':
+        generate_firebase_token()
 
 
 if __name__ == '__main__':
