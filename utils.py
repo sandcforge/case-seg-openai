@@ -12,7 +12,7 @@ from dotenv import load_dotenv # type: ignore
 
 class Utils:
     """Utility class containing static helper methods"""
-    
+
     @staticmethod
     def format_channel_for_display(channel_url: str) -> str:
         """
@@ -44,27 +44,38 @@ class Utils:
     def get_aloy_token() -> str:
         """
         Get Firebase ID token for Aloy authentication using environment variables
-        
+        Token is cached for 3 hours to avoid unnecessary API calls
+
         Required environment variables:
         - FIREBASE_API_KEY: Firebase project API key
         - FIREBASE_EMAIL: User email for authentication
         - FIREBASE_PASSWORD: User password for authentication
-        
+
         Returns:
             Firebase ID token string
-            
+
         Raises:
             ValueError: If required environment variables are missing
             RuntimeError: If authentication request fails
         """
+        from datetime import datetime, timedelta
+
+        # Check if we have a cached token that's still valid (less than 3 hours old)
+        if hasattr(Utils.get_aloy_token, '_cache'):
+            cache = Utils.get_aloy_token._cache
+            if cache['token'] and cache['timestamp']:
+                time_elapsed = datetime.now() - cache['timestamp']
+                if time_elapsed < timedelta(hours=3):
+                    return cache['token']
+
         # Load environment variables
         load_dotenv()
-        
+
         # Get required environment variables
         api_key = os.getenv("FIREBASE_API_KEY")
         email = os.getenv("FIREBASE_EMAIL")
         password = os.getenv("FIREBASE_PASSWORD")
-        
+
         # Check for missing environment variables
         missing_vars = []
         if not api_key:
@@ -73,10 +84,10 @@ class Utils:
             missing_vars.append("FIREBASE_EMAIL")
         if not password:
             missing_vars.append("FIREBASE_PASSWORD")
-        
+
         if missing_vars:
             raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
-        
+
         # Prepare Firebase authentication request
         url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={api_key}"
         payload = {
@@ -84,21 +95,27 @@ class Utils:
             "password": password,
             "returnSecureToken": True
         }
-        
+
         try:
             # Make authentication request
             response = requests.post(url, json=payload)
             response.raise_for_status()
-            
+
             # Parse response
             data = response.json()
             id_token = data.get("idToken")
-            
+
             if not id_token:
                 raise RuntimeError("Firebase authentication succeeded but no idToken was returned")
-            
+
+            # Cache the token with current timestamp
+            Utils.get_aloy_token._cache = {
+                'token': id_token,
+                'timestamp': datetime.now()
+            }
+
             return id_token
-            
+
         except requests.RequestException as e:
             raise RuntimeError(f"Firebase authentication request failed: {e}")
         except (KeyError, ValueError) as e:
