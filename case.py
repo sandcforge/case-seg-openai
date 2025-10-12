@@ -53,6 +53,7 @@ class Case:
     classification_reasoning: str = "N/A"  # 分类理由
     classification_confidence: float = 0.0  # 分类置信度
     classification_indicators: List[str] = field(default_factory=list)  # 关键指标
+    has_classification: bool = False  # 是否已完成分类
     
     def __post_init__(self):
         """Initialize meta if not provided"""
@@ -182,6 +183,7 @@ class Case:
             'classification_reasoning': self.classification_reasoning,
             'classification_confidence': self.classification_confidence,
             'classification_indicators': self.classification_indicators,
+            'has_classification': self.has_classification,
             'first_res_time': self.first_res_time,
             'handle_time': self.handle_time,
             'first_contact_resolution': self.first_contact_resolution,
@@ -233,7 +235,8 @@ class Case:
         self.classification_reasoning = classification_response['reasoning']
         self.classification_confidence = classification_response['confidence']
         self.classification_indicators = classification_response['key_indicators']
-        
+        self.has_classification = True
+
         return classification_response
     
 

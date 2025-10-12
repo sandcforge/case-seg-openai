@@ -240,7 +240,22 @@ class Channel:
         for case_dict in global_cases_data:
             # 创建Case对象，使用文件中的所有数据
             msg_index_list = case_dict.get('msg_index_list', [])
-            
+            has_classification = case_dict.get('has_classification', False)
+
+            # 如果已完成分类，从文件加载分类结果；否则使用默认值
+            if has_classification:
+                main_category = case_dict.get('main_category', 'unknown')
+                sub_category = case_dict.get('sub_category', 'unknown')
+                classification_reasoning = case_dict.get('classification_reasoning', 'N/A')
+                classification_confidence = case_dict.get('classification_confidence', 0.0)
+                classification_indicators = case_dict.get('classification_indicators', [])
+            else:
+                main_category = 'unknown'
+                sub_category = 'unknown'
+                classification_reasoning = 'N/A'
+                classification_confidence = 0.0
+                classification_indicators = []
+
             case_obj = Case(
                 case_id=case_dict.get('case_id'),
                 msg_index_list=msg_index_list,
@@ -249,12 +264,13 @@ class Channel:
                 pending_party=case_dict.get('pending_party', 'N/A'),
                 segmentation_confidence=case_dict.get('segmentation_confidence', 0.0),
                 channel_url=case_dict.get('channel_url', self.channel_url),
-                # 加载分类结果
-                main_category=case_dict.get('main_category', 'unknown'),
-                sub_category=case_dict.get('sub_category', 'unknown'),
-                classification_reasoning=case_dict.get('classification_reasoning', 'N/A'),
-                classification_confidence=case_dict.get('classification_confidence', 0.0),
-                classification_indicators=case_dict.get('classification_indicators', []),
+                # 加载分类结果（基于has_classification决定）
+                main_category=main_category,
+                sub_category=sub_category,
+                classification_reasoning=classification_reasoning,
+                classification_confidence=classification_confidence,
+                classification_indicators=classification_indicators,
+                has_classification=has_classification,
                 # 加载meta信息
                 meta=MetaInfo(
                     tracking_numbers=case_dict.get('meta', {}).get('tracking_numbers', []),
