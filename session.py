@@ -324,18 +324,18 @@ class Session:
         if os.path.exists(channel_cases_file):
             print(f"        ⏭️  Loading existing results from file")
             channel.build_cases_via_file(self.output_dir)
-            
+
             # Force re-classification if enabled
             if self.force_classification:
                 print(f"        🔄 Force re-classification enabled")
                 channel.classify_all_cases_via_llm(llm_client)
-            else:
-                channel.classify_all_cases_via_file(self.output_dir)
+
         else:
             # Process channel with full pipeline (includes vision processing if enabled)
             channel.build_cases_via_llm(llm_client)
             channel.classify_all_cases_via_llm(llm_client)
         
+
         return channel
     
     def process_channels(self) -> None:
