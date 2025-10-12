@@ -256,6 +256,12 @@ class Channel:
                 classification_confidence = 0.0
                 classification_indicators = []
 
+            # 加载SOP相关字段
+            has_sop = case_dict.get('has_sop', False)
+            sop_content = case_dict.get('sop_content', 'N/A')
+            sop_url = case_dict.get('sop_url', 'N/A')
+            sop_score = case_dict.get('sop_score', 0.0)
+
             case_obj = Case(
                 case_id=case_dict.get('case_id'),
                 msg_index_list=msg_index_list,
@@ -271,6 +277,11 @@ class Channel:
                 classification_confidence=classification_confidence,
                 classification_indicators=classification_indicators,
                 has_classification=has_classification,
+                # 加载SOP信息
+                has_sop=has_sop,
+                sop_content=sop_content,
+                sop_url=sop_url,
+                sop_score=sop_score,
                 # 加载meta信息
                 meta=MetaInfo(
                     tracking_numbers=case_dict.get('meta', {}).get('tracking_numbers', []),

@@ -54,7 +54,12 @@ class Case:
     classification_confidence: float = 0.0  # 分类置信度
     classification_indicators: List[str] = field(default_factory=list)  # 关键指标
     has_classification: bool = False  # 是否已完成分类
-    
+    # SOP fields
+    has_sop: bool = False  # 是否已找到相关SOP
+    sop_content: str = "N/A"  # SOP内容
+    sop_url: str = "N/A"  # SOP链接
+    sop_score: float = 0.0  # SOP评分
+
     def __post_init__(self):
         """Initialize meta if not provided"""
         if self.meta is None:
@@ -184,6 +189,10 @@ class Case:
             'classification_confidence': self.classification_confidence,
             'classification_indicators': self.classification_indicators,
             'has_classification': self.has_classification,
+            'has_sop': self.has_sop,
+            'sop_content': self.sop_content,
+            'sop_url': self.sop_url,
+            'sop_score': self.sop_score,
             'first_res_time': self.first_res_time,
             'handle_time': self.handle_time,
             'first_contact_resolution': self.first_contact_resolution,
@@ -238,7 +247,46 @@ class Case:
         self.has_classification = True
 
         return classification_response
-    
+
+    def find_sop(self) -> Dict[str, Any]:
+        """
+        Find the most relevant SOP for this case by calling Aloy API
+
+        Returns:
+            API response dict containing SOP information
+
+        Raises:
+            ValueError: If no messages available
+            RuntimeError: If API call fails
+        """
+        if self.messages is None or self.messages.empty:
+            raise ValueError("Cannot find SOP: no messages available")
+
+        # Format messages as chat logs string
+        chat_logs = Utils.format_messages_for_prompt(self.messages)
+
+        # Call SOP API (returns parsed dict with sop_content, sop_url, sop_score)
+        data = Utils.call_sop_api(chat_logs)
+
+        # Update case fields with parsed data
+        if data.get('sop_content') and data.get('sop_content') != 'N/A':
+            self.has_sop = True
+            self.sop_content = data.get('sop_content', 'N/A')
+            self.sop_url = data.get('sop_url', 'N/A')
+
+            # Convert sop_score to float
+            try:
+                self.sop_score = float(data.get('sop_score', 0.0))
+            except (ValueError, TypeError):
+                self.sop_score = 0.0
+        else:
+            self.has_sop = False
+            self.sop_content = 'N/A'
+            self.sop_url = 'N/A'
+            self.sop_score = 0.0
+
+        return data
+
 
 # ----------------------------
 # LLM-Compatible Models

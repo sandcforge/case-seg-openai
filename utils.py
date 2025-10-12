@@ -103,3 +103,90 @@ class Utils:
             raise RuntimeError(f"Firebase authentication request failed: {e}")
         except (KeyError, ValueError) as e:
             raise RuntimeError(f"Failed to parse Firebase authentication response: {e}")
+
+    @staticmethod
+    def call_sop_api(chat_logs: str) -> dict:
+        """
+        Call Aloy API to find the most relevant SOP for given chat logs
+
+        Args:
+            chat_logs: Formatted chat logs string
+
+        Returns:
+            Parsed dict containing: { "sop_content": "...", "sop_url": "...", "sop_score": "..." }
+            Returns empty strings if parsing fails
+
+        Raises:
+            RuntimeError: If API call fails
+        """
+        # Get Firebase token
+        try:
+            token = Utils.get_aloy_token()
+        except (ValueError, RuntimeError) as e:
+            raise RuntimeError(f"Failed to get authentication token: {e}")
+
+        # Prepare API request
+        url = "https://api.plantstory.app/aloy/ai/generate-text"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "systemPromptName": "sheng-find-most-sop",
+            "frontendVariables": {
+                "chatLogs": chat_logs
+            },
+            "showDetails": False,
+            "messages": [
+                {
+                    "parts": [
+                        {
+                            "type": "text",
+                            "text": "\n"
+                        }
+                    ],
+                    "role": "user"
+                }
+            ]
+        }
+
+        # Call API
+        try:
+            response = requests.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+
+            # Parse the XML-like tags from data.result
+            # Expected format: { "status": "success", "data": { "result": "<SOP Content>...</SOP Content>..." } }
+            result = {}
+            if data.get('status') == 'success' and data.get('data', {}).get('result'):
+                result_str = data['data']['result']
+
+                # Extract content between tags
+                import re
+
+                # Extract <SOP Content>...</SOP Content>
+                sop_content_match = re.search(r'<SOP Content>(.*?)</SOP Content>', result_str, re.DOTALL)
+                result['sop_content'] = sop_content_match.group(1).strip() if sop_content_match else 'N/A'
+
+                # Extract <SOP URL>...</SOP URL>
+                sop_url_match = re.search(r'<SOP URL>(.*?)</SOP URL>', result_str, re.DOTALL)
+                result['sop_url'] = sop_url_match.group(1).strip() if sop_url_match else 'N/A'
+
+                # Extract <SOP Score>...</SOP Score>
+                sop_score_match = re.search(r'<SOP Score>(.*?)</SOP Score>', result_str, re.DOTALL)
+                result['sop_score'] = sop_score_match.group(1).strip() if sop_score_match else 'N/A'
+            else:
+                result = {
+                    'sop_content': 'N/A',
+                    'sop_url': 'N/A',
+                    'sop_score': 'N/A'
+                }
+
+            return result
+
+        except requests.RequestException as e:
+            raise RuntimeError(f"SOP API request failed: {e}")
+        except (KeyError, ValueError) as e:
+            raise RuntimeError(f"Failed to parse SOP API response: {e}")
