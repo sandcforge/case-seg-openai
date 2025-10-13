@@ -74,12 +74,14 @@ def main() -> None:
     parser.add_argument(
         '--enable-classification',
         action='store_true',
-        help='Enable classification when loading cases from existing files'
+        default=True,
+        help='Enable classification when loading cases from existing files (default: True)'
     )
     parser.add_argument(
         '--enable-vision-processing',
         action='store_true',
-        help='Enable vision processing for FILE type messages'
+        default=True,
+        help='Enable vision processing for FILE type messages (default: True)'
     )
     parser.add_argument(
         '--session', '-s',
@@ -93,7 +95,24 @@ def main() -> None:
     )
     
     args = parser.parse_args()
-    
+
+    # Print configuration parameters
+    print("=" * 60)
+    print("Configuration Parameters")
+    print("=" * 60)
+    print(f"  Input File:              {args.input}")
+    print(f"  Output Directory:        {args.output_dir}")
+    print(f"  Chunk Size:              {args.chunk_size}")
+    print(f"  Overlap:                 {args.overlap}")
+    print(f"  Model:                   {args.model}")
+    print(f"  Session Name:            {args.session or 'auto-generated'}")
+    print(f"  Function:                {args.function}")
+    print(f"  Enable Review:           {args.enable_review}")
+    print(f"  Enable Classification:   {args.enable_classification}")
+    print(f"  Enable Vision Processing: {args.enable_vision_processing}")
+    print("=" * 60)
+    print()
+
     # Create and run session with explicit parameters
     session = Session(
         input_file=args.input,
