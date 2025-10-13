@@ -46,13 +46,13 @@ class Channel:
     ANCHOR_KEYS_STRICT = ("tracking", "order", "buyer", "topic")
     ANCHOR_KEYS_LAX = ("tracking", "order", "order_ids", "buyer", "buyers", "topic")
     
-    def __init__(self, df_clean: pd.DataFrame, channel_url: str, session: str, chunk_size: int = 80, overlap: int = 20, force_classification: bool = False, enable_vision_processing: bool = True):
+    def __init__(self, df_clean: pd.DataFrame, channel_url: str, session: str, chunk_size: int = 80, overlap: int = 20, enable_classification: bool = True, enable_vision_processing: bool = True):
         self.df_clean = df_clean.copy()  # Make a copy to avoid modifying original
         self.channel_url = channel_url
         self.session = session
         self.chunk_size = chunk_size
         self.overlap = overlap
-        self.force_classification = force_classification
+        self.enable_classification = enable_classification
         self.enable_vision_processing = enable_vision_processing
         self.cases: List[Case] = []
         
@@ -197,7 +197,8 @@ class Channel:
             # Perform classification using LLM
             print(f"        📊 Classifying case {case_obj.case_id}")
             try:
-                case_obj.classify_case(llm_client)
+                if self.enable_classification == True:
+                    case_obj.classify_case(llm_client)
             except Exception as e:
                 print(f"        ⚠️  Classification failed for {case_obj.case_id}: {e}")
             
@@ -265,6 +266,7 @@ class Channel:
             case_obj = Case(
                 case_id=case_dict.get('case_id'),
                 msg_index_list=msg_index_list,
+                messages=pd.DataFrame(case_dict.get('messages', [])),
                 summary=case_dict.get('summary', 'N/A'),
                 status=case_dict.get('status', 'ongoing'),
                 pending_party=case_dict.get('pending_party', 'N/A'),
@@ -289,11 +291,7 @@ class Channel:
                     user_names=case_dict.get('meta', {}).get('user_names', [])
                 )
             )
-            
-            # 提取消息DataFrame（与build_global_cases相同的逻辑）
-            case_messages = self.df_clean[self.df_clean['msg_ch_idx'].isin(case_obj.msg_index_list)].copy()
-            case_obj.messages = case_messages
-            
+
             case_objects.append(case_obj)
         
         self.cases = case_objects

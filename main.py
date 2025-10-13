@@ -72,9 +72,14 @@ def main() -> None:
         help='Enable LLM-based case review for regions between chunks'
     )
     parser.add_argument(
-        '--force-classification',
+        '--enable-classification',
         action='store_true',
-        help='Force classification re-run when loading cases from existing files'
+        help='Enable classification when loading cases from existing files'
+    )
+    parser.add_argument(
+        '--enable-vision-processing',
+        action='store_true',
+        help='Enable vision processing for FILE type messages'
     )
     parser.add_argument(
         '--session', '-s',
@@ -98,7 +103,8 @@ def main() -> None:
         model=args.model,
         session_name=args.session,
         enable_review=args.enable_review,
-        force_classification=args.force_classification
+        enable_classification=args.enable_classification,
+        enable_vision_processing=args.enable_vision_processing
     )
     # Execute selected function
     if args.function == 'mbr':

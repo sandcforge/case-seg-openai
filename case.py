@@ -66,14 +66,21 @@ class Case:
             self.meta = MetaInfo()
     
     @property
-    def global_msg_id_list(self) -> List[str]:
-        """Get list of Message IDs from the messages DataFrame"""
+    def messages_to_dict(self) -> List[Dict[str, Any]]:
+        """Convert messages DataFrame to list of dictionaries, handling datetime serialization"""
         if self.messages is None or self.messages.empty:
             return []
-        if 'Message ID' not in self.messages.columns:
-            return []
-        return self.messages['Message ID'].tolist()
-    
+
+        # Create a copy to avoid modifying original
+        df_copy = self.messages.copy()
+
+        # Convert datetime columns to ISO format strings for JSON serialization
+        for col in df_copy.columns:
+            if pd.api.types.is_datetime64_any_dtype(df_copy[col]):
+                df_copy[col] = df_copy[col].dt.strftime('%Y-%m-%d %H:%M:%S')
+
+        return df_copy.to_dict(orient='records')
+
     @property
     def start_time(self) -> Optional[str]:
         """Get start time from first message in the case"""
@@ -175,7 +182,7 @@ class Case:
         return {
             'case_id': self.case_id,
             'msg_index_list': self.msg_index_list,  # Now just a list of integers
-            'global_msg_id_list': self.global_msg_id_list,  # List of Message IDs
+            'messages': self.messages_to_dict,
             'summary': self.summary,
             'status': self.status,
             'pending_party': self.pending_party,
