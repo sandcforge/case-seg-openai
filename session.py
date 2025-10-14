@@ -225,35 +225,24 @@ class Session:
         else:
             print("Role column already exists, skipping...")
         
-        # 4. Parse Created Time to timezone-aware UTC format
-        def parse_to_utc(timestamp_str):
-            try:
-                # Parse with timezone info and convert to UTC
-                dt = pd.to_datetime(timestamp_str, utc=True)
-                return dt
-            except Exception:
-                return pd.NaT
-        
-        self.df['Created Time'] = self.df['Created Time'].apply(parse_to_utc)
-        print(f"        Processed time columns, converted {len(self.df)} timestamps to UTC")
-        
-        # 5. Sort data by Channel URL, Created Time, then Message ID
+        # 4. Sort data by Channel URL, Created Time, then Message ID
+        # Note: Created Time is kept as ISO 8601 string format for correct lexicographic sorting
         self.df = self.df.sort_values([
             'Channel URL',
-            'Created Time', 
+            'Created Time',
             'Message ID'
         ]).reset_index(drop=True)
         print(f"        Sorted data by Channel URL, Created Time, and Message ID")
-        
-        # 6. Add msg_ch_idx column (0..N-1 for each Channel URL group)
+
+        # 5. Add msg_ch_idx column (0..N-1 for each Channel URL group)
         self.df['msg_ch_idx'] = self.df.groupby('Channel URL').cumcount()
         print(f"        Added msg_ch_idx column for {self.df['Channel URL'].nunique()} channels")
         
-        # 7. Add File Summary column for vision analysis results
+        # 6. Add File Summary column for vision analysis results
         self.df['File Summary'] = ''
         print(f"        Added File Summary column for storing vision analysis results")
-        
-        # 8. Generate clean DataFrame with essential columns
+
+        # 7. Generate clean DataFrame with essential columns
         essential_columns = [
             'Created Time', 'Sender ID', 'Message', 'Channel URL',
             'role', 'msg_ch_idx', 'Message ID', 'Type', 'File URL', 'File Summary'

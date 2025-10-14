@@ -252,35 +252,20 @@ class Channel:
             # 创建Case对象，使用文件中的所有数据
             msg_index_list = case_dict.get('msg_index_list', [])
 
+
             # 加载Classification相关字段
             has_classification = case_dict.get('has_classification', False)
-            if self.enable_classification == True:
-                main_category = case_dict.get('main_category', 'unknown')
-                sub_category = case_dict.get('sub_category', 'unknown')
-                classification_reasoning = case_dict.get('classification_reasoning', 'N/A')
-                classification_confidence = case_dict.get('classification_confidence', 0.0)
-                classification_indicators = case_dict.get('classification_indicators', [])
-            else:
-                try:
-                    print(f"        📊 Classifying case {case_obj.case_id}")
-                    case_obj.classify_case(llm_client)
-                except Exception as e:
-                    print(f"        ⚠️  Classification failed for {case_obj.case_id}: {e}")
-                
+            main_category = case_dict.get('main_category', 'unknown')
+            sub_category = case_dict.get('sub_category', 'unknown')
+            classification_reasoning = case_dict.get('classification_reasoning', 'N/A')
+            classification_confidence = case_dict.get('classification_confidence', 0.0)
+            classification_indicators = case_dict.get('classification_indicators', [])                
 
             # 加载SOP相关字段
             has_sop = case_dict.get('has_sop', False)
-            if self.enable_find_sop == True:
-                sop_content = case_dict.get('sop_content', 'N/A')
-                sop_url = case_dict.get('sop_url', 'N/A')
-                sop_score = case_dict.get('sop_score', 0.0)
-            else:
-                try:
-                    print(f"        🔍 Finding SOP for case {case_obj.case_id}")
-                    case_obj.find_sop()
-                except Exception as e:
-                    print(f"        ⚠️  SOP finding failed for {case_obj.case_id}: {e}")
-                
+            sop_content = case_dict.get('sop_content', 'N/A')
+            sop_url = case_dict.get('sop_url', 'N/A')
+            sop_score = case_dict.get('sop_score', 0.0)
 
             case_obj = Case(
                 case_id=case_dict.get('case_id'),
@@ -310,6 +295,21 @@ class Channel:
                     user_names=case_dict.get('meta', {}).get('user_names', [])
                 )
             )
+
+            if self.enable_classification == True and case_obj.has_classification == False:
+                try:
+                    print(f"        📊 Classifying case {case_obj.case_id}")
+                    case_obj.classify_case(llm_client)
+                except Exception as e:
+                    print(f"        ⚠️  Classification failed for {case_obj.case_id}: {e}")
+
+            if self.enable_find_sop == True and case_obj.has_sop == False:
+                try:
+                    print(f"        🔍 Finding SOP for case {case_obj.case_id}")
+                    case_obj.find_sop()
+                except Exception as e:
+                    print(f"        ⚠️  SOP finding failed for {case_obj.case_id}: {e}")
+
 
             case_objects.append(case_obj)
 

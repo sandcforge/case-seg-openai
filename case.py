@@ -68,18 +68,7 @@ class Case:
     @property
     def messages_to_dict(self) -> List[Dict[str, Any]]:
         """Convert messages DataFrame to list of dictionaries, handling datetime serialization"""
-        if self.messages is None or self.messages.empty:
-            return []
-
-        # Create a copy to avoid modifying original
-        df_copy = self.messages.copy()
-
-        # Convert datetime columns to ISO format strings for JSON serialization
-        for col in df_copy.columns:
-            if pd.api.types.is_datetime64_any_dtype(df_copy[col]):
-                df_copy[col] = df_copy[col].dt.strftime('%Y-%m-%d %H:%M:%S')
-
-        return df_copy.to_dict(orient='records')
+        return self.messages.to_dict(orient='records')
 
 
     def global_msg_id_list(self) -> List[str]:
@@ -227,7 +216,7 @@ class Case:
             raise ValueError("Cannot classify case: no messages available")
         
         # Format all messages in this case using the Utils method
-        messages_text = Utils.format_messages_for_prompt(self.messages)
+        messages_text = Utils.format_messages_for_prompt2(self.messages)
         
         # Load the classification prompt template
         try:

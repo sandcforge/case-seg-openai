@@ -68,7 +68,7 @@ class Utils:
 
             # Replace customer_service with CS
             if role == 'customer_service':
-                role = 'CS'
+                role = 'cs'
             role = role[:5]
 
             msg_type = str(row.get('Type', ''))[:5]
