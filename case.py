@@ -81,6 +81,15 @@ class Case:
 
         return df_copy.to_dict(orient='records')
 
+
+    def global_msg_id_list(self) -> List[str]:
+        """Get list of Message IDs from the messages DataFrame"""
+        if self.messages is None or self.messages.empty:
+            return []
+        if 'Message ID' not in self.messages.columns:
+            return []
+        return self.messages['Message ID'].tolist()
+
     @property
     def start_time(self) -> Optional[str]:
         """Get start time from first message in the case"""
@@ -270,7 +279,7 @@ class Case:
             raise ValueError("Cannot find SOP: no messages available")
 
         # Format messages as chat logs string
-        chat_logs = Utils.format_messages_for_prompt(self.messages)
+        chat_logs = Utils.format_messages_for_prompt2(self.messages)
 
         # Call SOP API (returns parsed dict with sop_content, sop_url, sop_score)
         data = Utils.call_sop_api(chat_logs)
@@ -293,6 +302,68 @@ class Case:
             self.sop_score = 0.0
 
         return data
+
+    def print_case(self):
+        """Print case information in formatted output with 100 char wrap"""
+        def wrap_text(text: str, prefix: str = "", width: int = 100) -> str:
+            """Wrap text to specified width with prefix on continuation lines"""
+            if len(prefix + text) <= width:
+                return prefix + text
+
+            lines = []
+            remaining = text
+            first_line = True
+
+            while remaining:
+                if first_line:
+                    line_prefix = prefix
+                    first_line = False
+                else:
+                    line_prefix = " " * len(prefix)
+
+                available = width - len(line_prefix)
+                if len(remaining) <= available:
+                    lines.append(line_prefix + remaining)
+                    break
+
+                # Find last space within available width
+                split_pos = remaining[:available].rfind(' ')
+                if split_pos == -1:
+                    split_pos = available
+
+                lines.append(line_prefix + remaining[:split_pos])
+                remaining = remaining[split_pos:].lstrip()
+
+            return '\n'.join(lines)
+
+        print(wrap_text(self.case_id or "N/A", "Case ID: "))
+        print(wrap_text(self.channel_url, "Channel: "))
+        print(wrap_text(self.status, "Status: "))
+        print(wrap_text(self.summary, "Summary: "))
+
+        # Print classification information
+        if self.has_classification:
+            print("Classification:")
+            print(wrap_text(self.main_category, "    Main Category: "))
+            print(wrap_text(self.sub_category, "    Sub Category: "))
+            print(f"    Confidence: {self.classification_confidence:.2f}")
+            print(wrap_text(self.classification_reasoning, "    Reasoning: "))
+            if self.classification_indicators:
+                indicators_str = ', '.join(self.classification_indicators)
+                print(wrap_text(indicators_str, "    Key Indicators: "))
+
+        # Print SOP information
+        if self.has_sop:
+            print("SOP:")
+            print(f"    URL: {self.sop_url}")
+            print(f"    Score: {self.sop_score:.2f}")
+
+        if self.messages is not None and not self.messages.empty:
+            # Print formatted messages table using format_messages_for_prompt2
+            formatted_table = Utils.format_messages_for_prompt2(self.messages)
+            print(f"\n{formatted_table}")
+        else:
+            print("    Messages: No messages available")
 
 
 # ----------------------------

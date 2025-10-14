@@ -73,15 +73,21 @@ def main() -> None:
     )
     parser.add_argument(
         '--enable-classification',
-        action='store_true',
+        action=argparse.BooleanOptionalAction,
         default=True,
         help='Enable classification when loading cases from existing files (default: True)'
     )
     parser.add_argument(
         '--enable-vision-processing',
-        action='store_true',
+        action=argparse.BooleanOptionalAction,
         default=True,
         help='Enable vision processing for FILE type messages (default: True)'
+    )
+    parser.add_argument(
+        '--enable-find-sop',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Enable SOP finding when running QA function (default: True)'
     )
     parser.add_argument(
         '--session', '-s',
@@ -110,6 +116,7 @@ def main() -> None:
     print(f"  Enable Review:           {args.enable_review}")
     print(f"  Enable Classification:   {args.enable_classification}")
     print(f"  Enable Vision Processing: {args.enable_vision_processing}")
+    print(f"  Enable Find SOP:         {args.enable_find_sop}")
     print("=" * 60)
     print()
 
@@ -123,7 +130,8 @@ def main() -> None:
         session_name=args.session,
         enable_review=args.enable_review,
         enable_classification=args.enable_classification,
-        enable_vision_processing=args.enable_vision_processing
+        enable_vision_processing=args.enable_vision_processing,
+        enable_find_sop=args.enable_find_sop
     )
     # Execute selected function
     if args.function == 'mbr':

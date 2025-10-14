@@ -29,16 +29,17 @@ class Session:
     Encapsulates all business logic that was previously scattered across main.py and FileProcessor.
     """
     
-    def __init__(self, 
+    def __init__(self,
                  input_file: str,
-                 output_dir: str = 'out', 
+                 output_dir: str = 'out',
                  chunk_size: int = 60,
                  overlap: int = 10,
                  model: str = 'gpt-5',
                  session_name: Optional[str] = None,
                  enable_review: bool = False,
                  enable_vision_processing: bool = True,
-                 enable_classification: bool = True):
+                 enable_classification: bool = True,
+                 enable_find_sop: bool = True):
         """
         Initialize session with explicit parameters.
         
@@ -52,6 +53,7 @@ class Session:
             enable_review: Enable case review flag (default: False)
             enable_vision_processing: Enable vision processing for FILE messages (default: False)
             enable_classification: Enable classification when loading from files (default: False)
+            enable_find_sop: Enable SOP finding when running QA function (default: True)
         """
         # Pipeline configuration
         self.input_file = input_file
@@ -62,6 +64,7 @@ class Session:
         self.enable_review = enable_review
         self.enable_vision_processing = enable_vision_processing
         self.enable_classification = enable_classification
+        self.enable_find_sop = enable_find_sop
         
         # Session identification and output management
         self.session_name = session_name or datetime.now().strftime("%y%m%d_%H%M%S")
@@ -159,11 +162,9 @@ class Session:
             target_sub_category = "Modify Order / Modify Address / Modify Shipping to local pick up"
 
             for case in all_cases:
-                if (case.main_category == target_main_category and
-                    case.sub_category == target_sub_category):
-                    filtered_cases.append(case)
-                    if len(filtered_cases) == 10:  # Stop after collecting 10 cases
-                        break
+                filtered_cases.append(case)
+                if len(filtered_cases) == 10:  # Stop after collecting 10 cases
+                    break
 
             # Display results
             print(f"🔍 Found {len(filtered_cases)} cases (showing first 10) with:")
@@ -174,33 +175,9 @@ class Session:
             if filtered_cases:
                 print(f"\nFirst {len(filtered_cases)} matching cases with their messages:")
                 for i, case in enumerate(filtered_cases, 1):
-                    print(f"  {i}. Case ID: {case.case_id}")
-                    print(f"     Channel: {case.channel_url}")
-                    print(f"     Status: {case.status}")
-                    print(f"     Summary: {case.summary}")
-                    
-                    # Display all messages in this case as escaped string
-                    if case.messages is not None and not case.messages.empty:
-                        print(f"     Messages ({len(case.messages)} total):")
-                        
-                        # Create conversation string with escaped characters
-                        conversation_parts = []
-                        for msg_idx, msg_row in case.messages.iterrows():
-                            message = msg_row.get('Message', '')
-                            role = msg_row.get('role', '')
-                            
-                            # Handle empty/nan messages
-                            if pd.isna(message) or str(message).strip() == '' or str(message).lower() == 'nan':
-                                continue  # Skip empty messages
-                            
-                            # Escape special characters in the message
-                            escaped_message = str(message).replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
-                            conversation_parts.append(f"{role}: {escaped_message}")
-                        
-                        conversation_string = "\\n".join(conversation_parts)
-                        print(f'     Conversation: "{conversation_string}"')
-                    else:
-                        print(f"     Messages: No messages available")
+                    print("=" * 100)
+                    case.find_sop()
+                    case.print_case()
                     print()
             else:
                 print(f"No cases found matching the criteria.")
@@ -319,11 +296,11 @@ class Session:
         channel_cases_file = os.path.join(self.output_folder, f"cases_{channel_name}.json")
         
         # Create Channel instance
-        channel = Channel(channel_df, channel_url, self.session_name, self.chunk_size, self.overlap, self.enable_classification, self.enable_vision_processing)
+        channel = Channel(channel_df, channel_url, self.session_name, self.chunk_size, self.overlap, self.enable_classification, self.enable_vision_processing, self.enable_find_sop)
         
         if os.path.exists(channel_cases_file):
             print(f"        ⏭️  Loading existing results from file")
-            channel.build_cases_via_file(self.output_dir)
+            channel.build_cases_via_file(self.output_dir, llm_client)
         else:
             # Process channel with full pipeline (includes vision processing if enabled)
             channel.build_cases_via_llm(llm_client)

@@ -46,7 +46,7 @@ class Channel:
     ANCHOR_KEYS_STRICT = ("tracking", "order", "buyer", "topic")
     ANCHOR_KEYS_LAX = ("tracking", "order", "order_ids", "buyer", "buyers", "topic")
     
-    def __init__(self, df_clean: pd.DataFrame, channel_url: str, session: str, chunk_size: int = 80, overlap: int = 20, enable_classification: bool = True, enable_vision_processing: bool = True):
+    def __init__(self, df_clean: pd.DataFrame, channel_url: str, session: str, chunk_size: int = 80, overlap: int = 20, enable_classification: bool = True, enable_vision_processing: bool = True, enable_find_sop: bool = True):
         self.df_clean = df_clean.copy()  # Make a copy to avoid modifying original
         self.channel_url = channel_url
         self.session = session
@@ -54,6 +54,7 @@ class Channel:
         self.overlap = overlap
         self.enable_classification = enable_classification
         self.enable_vision_processing = enable_vision_processing
+        self.enable_find_sop = enable_find_sop
         self.cases: List[Case] = []
         
         self.validate_parameters()
@@ -195,13 +196,21 @@ class Channel:
             )
                         
             # Perform classification using LLM
-            print(f"        📊 Classifying case {case_obj.case_id}")
             try:
                 if self.enable_classification == True:
+                    print(f"        📊 Classifying case {case_obj.case_id}")
                     case_obj.classify_case(llm_client)
             except Exception as e:
                 print(f"        ⚠️  Classification failed for {case_obj.case_id}: {e}")
-            
+
+            # Perform SOP finding
+            try:
+                if self.enable_find_sop == True:
+                    print(f"        🔍 Finding SOP for case {case_obj.case_id}")
+                    case_obj.find_sop()
+            except Exception as e:
+                print(f"        ⚠️  SOP finding failed for {case_obj.case_id}: {e}")
+
             case_objects.append(case_obj)
         
         self.cases = case_objects
@@ -209,13 +218,14 @@ class Channel:
         print(f"    ✅ Cases built successfully ({len(self.cases)} Case objects)")
         return self.cases
     
-    def build_cases_via_file(self, output_dir: str) -> List[Case]:
+    def build_cases_via_file(self, output_dir: str, llm_client: 'LLMClient') -> List[Case]:
         """
-        从JSON文件加载现有结果并构建Case对象，纯粹的文件加载操作，不进行LLM分类
-        
+        从JSON文件加载现有结果并构建Case对象，可选进行LLM分类和SOP查找
+
         Args:
             output_dir: 输出目录路径
-            
+            llm_client: LLM客户端，用于分类和SOP查找
+
         Returns:
             Case对象列表，包含从文件加载的所有数据
         """
@@ -241,27 +251,36 @@ class Channel:
         for case_dict in global_cases_data:
             # 创建Case对象，使用文件中的所有数据
             msg_index_list = case_dict.get('msg_index_list', [])
-            has_classification = case_dict.get('has_classification', False)
 
-            # 如果已完成分类，从文件加载分类结果；否则使用默认值
-            if has_classification:
+            # 加载Classification相关字段
+            has_classification = case_dict.get('has_classification', False)
+            if self.enable_classification == True:
                 main_category = case_dict.get('main_category', 'unknown')
                 sub_category = case_dict.get('sub_category', 'unknown')
                 classification_reasoning = case_dict.get('classification_reasoning', 'N/A')
                 classification_confidence = case_dict.get('classification_confidence', 0.0)
                 classification_indicators = case_dict.get('classification_indicators', [])
             else:
-                main_category = 'unknown'
-                sub_category = 'unknown'
-                classification_reasoning = 'N/A'
-                classification_confidence = 0.0
-                classification_indicators = []
+                try:
+                    print(f"        📊 Classifying case {case_obj.case_id}")
+                    case_obj.classify_case(llm_client)
+                except Exception as e:
+                    print(f"        ⚠️  Classification failed for {case_obj.case_id}: {e}")
+                
 
             # 加载SOP相关字段
             has_sop = case_dict.get('has_sop', False)
-            sop_content = case_dict.get('sop_content', 'N/A')
-            sop_url = case_dict.get('sop_url', 'N/A')
-            sop_score = case_dict.get('sop_score', 0.0)
+            if self.enable_find_sop == True:
+                sop_content = case_dict.get('sop_content', 'N/A')
+                sop_url = case_dict.get('sop_url', 'N/A')
+                sop_score = case_dict.get('sop_score', 0.0)
+            else:
+                try:
+                    print(f"        🔍 Finding SOP for case {case_obj.case_id}")
+                    case_obj.find_sop()
+                except Exception as e:
+                    print(f"        ⚠️  SOP finding failed for {case_obj.case_id}: {e}")
+                
 
             case_obj = Case(
                 case_id=case_dict.get('case_id'),
@@ -293,7 +312,7 @@ class Channel:
             )
 
             case_objects.append(case_obj)
-        
+
         self.cases = case_objects
         
         print(f"        ✅ Cases loaded from file successfully ({len(self.cases)} Case objects)")
@@ -434,18 +453,21 @@ class Channel:
         # Add classification columns (only main_category and sub_category)
         df_annotated['main_category'] = "unknown"
         df_annotated['sub_category'] = "unknown"
-        
+        df_annotated['sop_url'] = "N/A"
+
         # Map case assignments and classification data using msg_ch_idx
         for case_obj in self.cases:
             case_id = case_obj.case_id or "unknown"
             main_category = case_obj.main_category
             sub_category = case_obj.sub_category
-            
+            sop_url = case_obj.sop_url
+
             for msg_ch_idx in case_obj.msg_index_list:
                 mask = df_annotated['msg_ch_idx'] == msg_ch_idx
                 df_annotated.loc[mask, 'case_id'] = case_id
                 df_annotated.loc[mask, 'main_category'] = main_category
                 df_annotated.loc[mask, 'sub_category'] = sub_category
+                df_annotated.loc[mask, 'sop_url'] = sop_url
         
         # Create session folder for organized output (same folder as JSON)
         session_folder = os.path.join(output_dir, f"session_{self.session}")
