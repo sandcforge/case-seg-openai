@@ -876,14 +876,14 @@ class Channel:
         for idx, (df_idx, file_msg) in enumerate(file_messages.iterrows()):
             try:
                 image_url = file_msg['File URL']
-                msg_ch_idx = file_msg['msg_ch_idx']
-                
+                message_id = file_msg['Message ID']
+
                 print(f"            Processing image {idx + 1}/{len(file_messages)}: {image_url.split('/')[-1]}")
-                
+
                 # Get context for this image using static method
                 context_df = VisionProcessor.get_context_for_image(
                     channel_df=self.df_clean,
-                    image_msg_ch_idx=msg_ch_idx,
+                    image_message_id=message_id,
                     context_size=3  # Smaller context for batch processing
                 )
                 

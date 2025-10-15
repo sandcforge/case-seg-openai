@@ -27,38 +27,44 @@ class VisionProcessor:
     """
         
     @staticmethod
-    def get_context_for_image(channel_df: pd.DataFrame, 
-                             image_msg_ch_idx: int,
+    def get_context_for_image(channel_df: pd.DataFrame,
+                             image_message_id: int,
                              context_size: int = 5) -> pd.DataFrame:
         """
         Get context messages around an image message (MESG type only)
-        
+
         Args:
-            channel_df: DataFrame containing messages from a single channel
-            image_msg_ch_idx: The msg_ch_idx of the image message within this channel
+            channel_df: DataFrame containing messages from a single channel (already sorted by time)
+            image_message_id: The Message ID of the image message
             context_size: Number of MESG messages to take before and after (default 5)
-            
+
         Returns:
-            DataFrame containing context messages (MESG type + original image message), sorted by msg_ch_idx
+            DataFrame containing context messages (MESG type + original image message), in chronological order
         """
-        # Find the image message in this channel
-        image_msg = channel_df[channel_df['msg_ch_idx'] == image_msg_ch_idx]
-        if len(image_msg) == 0:
-            raise ValueError(f"Image message with msg_ch_idx {image_msg_ch_idx} not found in channel")
-        
+        # Find the image message in this channel by Message ID
+        image_mask = channel_df['Message ID'] == image_message_id
+        if not image_mask.any():
+            raise ValueError(f"Image message with Message ID {image_message_id} not found in channel")
+
+        # Get the DataFrame index position of the image message
+        image_idx_pos = channel_df[image_mask].index[0]
+
         # Filter to MESG type messages only for context
         mesg_df = channel_df[channel_df['Type'] == 'MESG'].copy()
-        
-        # Find MESG messages before and after the image message
-        before_msgs = mesg_df[mesg_df['msg_ch_idx'] < image_msg_ch_idx].tail(context_size)
-        after_msgs = mesg_df[mesg_df['msg_ch_idx'] > image_msg_ch_idx].head(context_size)
-        
+
+        # Find MESG messages before and after the image message using DataFrame index
+        before_msgs = mesg_df[mesg_df.index < image_idx_pos].tail(context_size)
+        after_msgs = mesg_df[mesg_df.index > image_idx_pos].head(context_size)
+
+        # Get the image message itself
+        image_msg = channel_df[image_mask]
+
         # Combine context messages with image message
-        context_msgs = pd.concat([before_msgs, image_msg, after_msgs], ignore_index=True)
-        
-        # Sort by msg_ch_idx to ensure correct chronological order
-        context_msgs = context_msgs.sort_values('msg_ch_idx').reset_index(drop=True)
-        
+        context_msgs = pd.concat([before_msgs, image_msg, after_msgs], ignore_index=False)
+
+        # Sort by index to ensure correct chronological order (preserves original DataFrame order)
+        context_msgs = context_msgs.sort_index().reset_index(drop=True)
+
         return context_msgs
         
     @classmethod
@@ -68,12 +74,12 @@ class VisionProcessor:
                                  llm_client: 'LLMClient') -> Dict[str, Any]:
         """
         Analyze image with DataFrame context and return structured JSON description.
-        
+
         Args:
             context_df: pandas DataFrame slice from df_clean containing context messages
-                       Columns: 'msg_ch_idx', 'Sender ID', 'role', 'Created Time', 'Message', 'Type', 'File URL'
+                       Columns: 'Message ID', 'Sender ID', 'role', 'Created Time', 'Message', 'Type', 'File URL'
             image_url: URL to the image file for analysis
-            
+
         Returns:
             Dictionary containing visual analysis with detailed description and metadata
             
