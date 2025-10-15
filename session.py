@@ -234,18 +234,14 @@ class Session:
         ]).reset_index(drop=True)
         print(f"        Sorted data by Channel URL, Created Time, and Message ID")
 
-        # 5. Add msg_ch_idx column (0..N-1 for each Channel URL group)
-        self.df['msg_ch_idx'] = self.df.groupby('Channel URL').cumcount()
-        print(f"        Added msg_ch_idx column for {self.df['Channel URL'].nunique()} channels")
-        
-        # 6. Add File Summary column for vision analysis results
+        # 5. Add File Summary column for vision analysis results
         self.df['File Summary'] = ''
         print(f"        Added File Summary column for storing vision analysis results")
 
-        # 7. Generate clean DataFrame with essential columns
+        # 6. Generate clean DataFrame with essential columns
         essential_columns = [
             'Created Time', 'Sender ID', 'Message', 'Channel URL',
-            'role', 'msg_ch_idx', 'Message ID', 'Type', 'File URL', 'File Summary'
+            'role', 'Message ID', 'Type', 'File URL', 'File Summary'
         ]
         available_columns = [col for col in essential_columns if col in self.df.columns]
         self.df_clean = self.df[available_columns].copy()
@@ -277,9 +273,7 @@ class Session:
         """
         # Extract channel data
         channel_df = self.df_clean[self.df_clean['Channel URL'] == channel_url].copy()
-        # Reset msg_ch_idx to ensure it starts from 0 for each channel
-        channel_df['msg_ch_idx'] = range(len(channel_df))
-        
+
         # Check if channel results already exist
         channel_name = Utils.format_channel_for_display(channel_url)
         channel_cases_file = os.path.join(self.output_folder, f"cases_{channel_name}.json")

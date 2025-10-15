@@ -39,7 +39,7 @@ class MetaInfo:
 class Case:
     """Individual case structure for case segmentation output"""
     case_id: Optional[str] = None  # Case ID (assigned during processing)
-    message_id_list: List[int] = field(default_factory=list)  # List of msg_ch_idx values
+    message_id_list: List[int] = field(default_factory=list)  # List of Message ID values
     messages: Optional['pd.DataFrame'] = None  # Related messages DataFrame
     summary: str = "N/A"
     status: str = "ongoing"  # open | ongoing | resolved | blocked

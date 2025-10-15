@@ -311,7 +311,6 @@ class Channel:
                 except Exception as e:
                     print(f"        ⚠️  SOP finding failed for {case_obj.case_id}: {e}")
 
-
             case_objects.append(case_obj)
 
         self.cases = case_objects
@@ -464,7 +463,6 @@ class Channel:
             sub_category = case_obj.sub_category
             sop_url = case_obj.sop_url
             sop_score = case_obj.sop_score
-
             for message_id in case_obj.message_id_list:
                 mask = df_annotated['Message ID'] == message_id
                 df_annotated.loc[mask, 'case_id'] = case_id
