@@ -176,7 +176,7 @@ class Channel:
         for idx, case_dict in enumerate(repaired_case_dicts):
             # Extract messages first using message_id_list from dictionary
             message_id_list = case_dict['message_id_list']
-            # message_id_list now contains actual Message IDs, not msg_ch_idx
+            # message_id_list now contains actual Message IDs
             case_messages = self.df_clean[self.df_clean['Message ID'].isin(message_id_list)].copy()
             
             # Create Case object from dictionary
@@ -457,7 +457,7 @@ class Channel:
         df_annotated['sop_url'] = "N/A"
         df_annotated['sop_score'] = 0.0
 
-        # Map case assignments and classification data using msg_ch_idx
+        # Map case assignments and classification data using Message ID
         for case_obj in self.cases:
             case_id = case_obj.case_id or "unknown"
             main_category = case_obj.main_category
@@ -465,8 +465,8 @@ class Channel:
             sop_url = case_obj.sop_url
             sop_score = case_obj.sop_score
 
-            for msg_ch_idx in case_obj.message_id_list:
-                mask = df_annotated['msg_ch_idx'] == msg_ch_idx
+            for message_id in case_obj.message_id_list:
+                mask = df_annotated['Message ID'] == message_id
                 df_annotated.loc[mask, 'case_id'] = case_id
                 df_annotated.loc[mask, 'main_category'] = main_category
                 df_annotated.loc[mask, 'sub_category'] = sub_category
