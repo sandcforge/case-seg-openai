@@ -153,7 +153,7 @@ Case类包含完整的案例信息：
 class Case:
     # 基本信息
     case_id: str
-    msg_index_list: List[int]
+    message_id_list: List[int]
     messages: pd.DataFrame
     summary: str
     status: str  # ongoing|resolved|blocked
@@ -488,7 +488,7 @@ out/
     "global_cases": [
         {
             "case_id": "0",
-            "msg_index_list": [0, 1, 2, 5],
+            "message_id_list": [0, 1, 2, 5],
             "summary": "Order 12345 shipping address change request...",
             "status": "resolved",
             "main_category": "Order",

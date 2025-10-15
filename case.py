@@ -39,7 +39,7 @@ class MetaInfo:
 class Case:
     """Individual case structure for case segmentation output"""
     case_id: Optional[str] = None  # Case ID (assigned during processing)
-    msg_index_list: List[int] = field(default_factory=list)  # List of msg_ch_idx values
+    message_id_list: List[int] = field(default_factory=list)  # List of msg_ch_idx values
     messages: Optional['pd.DataFrame'] = None  # Related messages DataFrame
     summary: str = "N/A"
     status: str = "ongoing"  # open | ongoing | resolved | blocked
@@ -71,7 +71,7 @@ class Case:
         return self.messages.to_dict(orient='records')
 
 
-    def global_msg_id_list(self) -> List[str]:
+    def message_id_list(self) -> List[str]:
         """Get list of Message IDs from the messages DataFrame"""
         if self.messages is None or self.messages.empty:
             return []
@@ -179,7 +179,7 @@ class Case:
         """Convert to dictionary for JSON serialization"""
         return {
             'case_id': self.case_id,
-            'msg_index_list': self.msg_index_list,  # Now just a list of integers
+            'message_id_list': self.message_id_list,  # Now just a list of integers
             'messages': self.messages_to_dict,
             'summary': self.summary,
             'status': self.status,
@@ -360,10 +360,10 @@ class Case:
 # ----------------------------
 
 class CaseSegmentationLLMRes(BaseModel):
-    """LLM-compatible case structure using List[int] for msg_index_list"""
+    """LLM-compatible case structure using List[int] for message_id_list"""
     model_config = {"extra": "forbid"}
     
-    msg_index_list: List[int]  # List of message indices instead of DataFrame
+    message_id_list: List[int]  # List of message indices instead of DataFrame
     summary: str
     status: str  # open | ongoing | resolved | blocked
     pending_party: str  # seller|platform|N/A

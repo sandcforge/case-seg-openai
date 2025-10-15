@@ -98,7 +98,7 @@ class VisionProcessor:
                 context_text = "No context messages available."
             else:
                 # Use the standardized formatting method from Utils for DataFrame
-                context_text = Utils.format_messages_for_prompt(context_df)
+                context_text = Utils.format_messages_for_prompt2(context_df)
             
             # Load vision prompt template
             prompt_template = llm_client.load_prompt("vision_analysis_prompt.md")

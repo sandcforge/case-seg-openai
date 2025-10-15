@@ -394,8 +394,7 @@ class Session:
                 'tracking_numbers': format_array_field(tracking_numbers),
                 'order_numbers': format_array_field(order_numbers),
                 'user_names': format_array_field(user_names),
-                'msg_index_list': format_array_field(case.msg_index_list),
-                'global_msg_id_list': format_array_field(case.global_msg_id_list)
+                'message_id_list': format_array_field(case.message_id_list)
             }
             csv_data.append(row)
         
