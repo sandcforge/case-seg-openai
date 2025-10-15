@@ -176,7 +176,8 @@ class Channel:
         for idx, case_dict in enumerate(repaired_case_dicts):
             # Extract messages first using message_id_list from dictionary
             message_id_list = case_dict['message_id_list']
-            case_messages = self.df_clean[self.df_clean['msg_ch_idx'].isin(message_id_list)].copy()
+            # message_id_list now contains actual Message IDs, not msg_ch_idx
+            case_messages = self.df_clean[self.df_clean['Message ID'].isin(message_id_list)].copy()
             
             # Create Case object from dictionary
             case_obj = Case(

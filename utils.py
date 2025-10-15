@@ -23,29 +23,11 @@ class Utils:
             return channel_url
         return channel_url.split('_')[-1]
     
-    # FIXME: review all the references, if need to be replaced by format_messages_for_prompt2, which consider FILE type
-    @staticmethod
-    def format_messages_for_prompt(chunk_df) -> str:
-        """
-        Format DataFrame messages for LLM prompt: message_index | sender id | role | timestamp | text
-        Supports both single rows and DataFrames via pandas iterrows() method
-        """
-        formatted_lines = []
-        for _, row in chunk_df.iterrows():
-            # Handle NaN messages and replace newlines with spaces to keep one line per message
-            message_text = str(row['Message']).replace('\n', ' ').replace('\r', ' ')
-            if message_text == 'nan':
-                message_text = ''
-
-            formatted_line = f"{row['msg_ch_idx']} | {row['Sender ID']} | {row['role']} | {row['Created Time']} | {message_text}"
-            formatted_lines.append(formatted_line)
-        return '\n'.join(formatted_lines)
-
     @staticmethod
     def format_messages_for_prompt2(chunk_df) -> str:
         """
-        Format DataFrame messages in table layout with 100-char width and line wrapping
-        Columns: Created Time (20), Role (6), Type (6), Message/File Summary
+        Format DataFrame messages in table layout with tab-separated columns
+        Columns: Message ID (11), Created Time (19), Role (6), Type (4), Message (100 chars wrap)
 
         Args:
             chunk_df: DataFrame with message data
@@ -56,22 +38,31 @@ class Utils:
         import pandas as pd
 
         lines = []
-        # Header
-        lines.append("-" * 100)
-        lines.append(f"{'Created Time':<20} {'Role':<6} {'Type':<6} {'Message/File Summary':<64}")
-        lines.append("-" * 100)
+        # Header - use tabs between columns
+        lines.append("-" * 150)
+        lines.append(f"{'Message ID':<11}\t{'Created Time (UTC)':<19}\t{'Role':<6}\t{'Type':<4}\tMessage/File Summary")
+        lines.append("-" * 150)
 
         # Process each message
         for _, row in chunk_df.iterrows():
-            created_time = str(row.get('Created Time', ''))[:19]
+            message_id = str(row.get('Message ID', ''))[:10]  # Truncate to 10 chars (fits 11-char column)
+            created_time = str(row.get('Created Time', ''))[:19]  # Keep full timestamp
             role = str(row.get('role', ''))
 
-            # Replace customer_service with CS
+            # Map role names
             if role == 'customer_service':
                 role = 'cs'
-            role = role[:5]
+            elif role == 'user':
+                role = 'user'
+            role = role[:6]  # Truncate to 6 chars
 
-            msg_type = str(row.get('Type', ''))[:5]
+            # Get Type - should be MESG or FILE (4 chars)
+            msg_type = str(row.get('Type', ''))
+            if msg_type.upper() == 'MESSAGE':
+                msg_type = 'MESG'
+            elif msg_type.upper() == 'FILE':
+                msg_type = 'FILE'
+            msg_type = msg_type[:4]  # Ensure max 4 chars
 
             # Get message content
             message = row.get('Message', '')
@@ -88,13 +79,14 @@ class Utils:
             else:
                 message = str(message).replace('\n', ' ').replace('\r', ' ')
 
-            # Format with wrapping
-            # First line uses: time(20) + space + role(6) + space + type(6) + space = 34 chars
-            # Remaining for message: 100 - 34 = 66 chars on first line
-            msg_prefix = f"{created_time:<20} {role:<6} {msg_type:<6} "
-            msg_indent = " " * 34  # Align continuation lines
+            # Format with wrapping - use tabs
+            # Prefix: msg_id(11) + tab + time(19) + tab + role(6) + tab + type(4) + tab
+            msg_prefix = f"{message_id:<11}\t{created_time:<19}\t{role:<6}\t{msg_type:<4}\t"
+            # Continuation indent: align to start of message column (after all tabs)
+            msg_indent = " " * 11 + "\t" + " " * 19 + "\t" + " " * 6 + "\t" + " " * 4 + "\t"
 
-            if len(message) <= 66:
+            # Message wraps at 100 chars
+            if len(message) <= 100:
                 lines.append(f"{msg_prefix}{message}")
             else:
                 # Wrap message across multiple lines
@@ -102,11 +94,11 @@ class Utils:
                 first_line = True
                 while remaining:
                     if first_line:
-                        available = 66
+                        available = 100
                         line_start = msg_prefix
                         first_line = False
                     else:
-                        available = 66  # Continuation lines also get 66 chars
+                        available = 100  # Continuation lines also get 100 chars
                         line_start = msg_indent
 
                     if len(remaining) <= available:
@@ -122,7 +114,7 @@ class Utils:
                     remaining = remaining[split_pos:].lstrip()
 
         # Footer
-        lines.append("-" * 100)
+        lines.append("-" * 150)
 
         return '\n'.join(lines)
 

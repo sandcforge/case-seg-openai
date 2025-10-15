@@ -4,12 +4,18 @@ A **case** is a coherent issue from start to finish (may span multiple messages)
 
 ### Input
 
-**CHUNK MESSAGES** — formatted as a table with columns:
+**CHUNK MESSAGES** — formatted as a tab-separated table with columns:
 ```
-Message ID | Created Time | Role | Type | Message/File Summary
+Message ID	Created Time (UTC)	Role	Type	Message/File Summary
 ```
 - All messages are from the same channel
 - Table includes headers and separator lines
+- Columns are separated by tabs
+- Message ID: 11 characters (10-digit database ID)
+- Created Time: 19 characters, timestamps are in UTC
+- Role: 6 characters (user, cs)
+- Type: 4 characters (MESG for text messages, FILE for file attachments)
+- Message/File Summary: wraps at 100 characters
 - For FILE type messages, the Message/File Summary column shows the file description from vision analysis instead of message text
 
 ---
@@ -79,7 +85,7 @@ Return only:
 {
   "complete_cases": [
     {
-      "message_id_list": [0,1,2,5],
+      "message_id_list": [4499509692, 4599500696],
       "summary": "Brief description of the issue, actions taken, and resolution or attemps.",
       "status": "open|ongoing|resolved|blocked",
       "pending_party": "seller|platform|N/A",
