@@ -455,6 +455,7 @@ class Channel:
         df_annotated['main_category'] = "unknown"
         df_annotated['sub_category'] = "unknown"
         df_annotated['sop_url'] = "N/A"
+        df_annotated['sop_score'] = 0.0
 
         # Map case assignments and classification data using msg_ch_idx
         for case_obj in self.cases:
@@ -462,6 +463,7 @@ class Channel:
             main_category = case_obj.main_category
             sub_category = case_obj.sub_category
             sop_url = case_obj.sop_url
+            sop_score = case_obj.sop_score
 
             for msg_ch_idx in case_obj.message_id_list:
                 mask = df_annotated['msg_ch_idx'] == msg_ch_idx
@@ -469,6 +471,7 @@ class Channel:
                 df_annotated.loc[mask, 'main_category'] = main_category
                 df_annotated.loc[mask, 'sub_category'] = sub_category
                 df_annotated.loc[mask, 'sop_url'] = sop_url
+                df_annotated.loc[mask, 'sop_score'] = sop_score
         
         # Create session folder for organized output (same folder as JSON)
         session_folder = os.path.join(output_dir, f"session_{self.session}")
