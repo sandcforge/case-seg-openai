@@ -295,3 +295,325 @@ class Utils:
                 raise RuntimeError(f"SOP API request failed: {e}")
             except (KeyError, ValueError) as e:
                 raise RuntimeError(f"Failed to parse SOP API response: {e}")
+
+    @staticmethod
+    def query_bigquery(
+        sql: str,
+        query_params: 'Optional[List[Dict[str, Any]]]' = None
+    ) -> 'List[Dict[str, Any]]':
+        """
+        Query Google BigQuery and return results as JSON format
+
+        Reads BigQuery service account credentials from environment variable BIGQUERY_CREDENTIALS_JSON.
+        The credentials should be stored as a single-line JSON string in .env file.
+
+        Args:
+            sql: SQL query string. Use @param_name for parameterized queries
+            query_params: Optional list of query parameters for parameterized queries
+                Format: [{"name": "param_name", "type": "STRING|INT64|FLOAT64|BOOL|TIMESTAMP", "value": value}, ...]
+                Example: [{"name": "channel", "type": "STRING", "value": "sendbird_xxx"}]
+
+        Returns:
+            List of dictionaries, each representing a row from the query results
+            Example: [{"column1": value1, "column2": value2}, ...]
+
+        Raises:
+            ValueError: If BIGQUERY_CREDENTIALS_JSON environment variable is missing or invalid JSON
+            RuntimeError: If BigQuery API request fails
+
+        Example:
+            # Simple query
+            results = Utils.query_bigquery(
+                sql="SELECT * FROM `plantstory.dataset.table` LIMIT 10"
+            )
+
+            # Parameterized query (recommended for security)
+            results = Utils.query_bigquery(
+                sql="SELECT * FROM `plantstory.support.messages` WHERE channel_url = @channel",
+                query_params=[{"name": "channel", "type": "STRING", "value": "sendbird_xxx"}]
+            )
+        """
+        import json
+        from typing import List, Dict, Any, Optional
+
+        try:
+            from google.cloud import bigquery
+            from google.oauth2 import service_account
+        except ImportError:
+            raise RuntimeError(
+                "BigQuery client library not installed. "
+                "Please run: pip install google-cloud-bigquery>=3.11.0"
+            )
+
+        # Load environment variables
+        load_dotenv()
+
+        # Get BigQuery credentials JSON from environment variable
+        credentials_json = os.getenv('BIGQUERY_CREDENTIALS_JSON')
+
+        if not credentials_json:
+            raise ValueError(
+                "Missing required environment variable: BIGQUERY_CREDENTIALS_JSON\n"
+                "Please add your BigQuery service account JSON credentials to .env file.\n"
+                "Example: BIGQUERY_CREDENTIALS_JSON='{\"type\":\"service_account\",...}'"
+            )
+
+        try:
+            # Parse JSON string to dictionary
+            credentials_dict = json.loads(credentials_json)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON format in BIGQUERY_CREDENTIALS_JSON: {e}")
+
+        try:
+            # Create credentials from service account info (not from file)
+            credentials = service_account.Credentials.from_service_account_info(
+                credentials_dict
+            )
+
+            # Create BigQuery client with plantstory project
+            client = bigquery.Client(
+                credentials=credentials,
+                project='plantstory'
+            )
+
+            # Configure query job with parameters if provided
+            job_config = None
+            if query_params:
+                # Convert query parameters to BigQuery format
+                bq_params = []
+                for param in query_params:
+                    param_name = param.get('name')
+                    param_type = param.get('type', 'STRING')
+                    param_value = param.get('value')
+
+                    if not param_name:
+                        raise ValueError("Query parameter missing 'name' field")
+
+                    bq_params.append(
+                        bigquery.ScalarQueryParameter(param_name, param_type, param_value)
+                    )
+
+                job_config = bigquery.QueryJobConfig(query_parameters=bq_params)
+
+            # Execute query
+            query_job = client.query(sql, job_config=job_config)
+
+            # Wait for query to complete and get results
+            results = query_job.result()
+
+            # Convert results to list of dictionaries (JSON format)
+            rows_list = []
+            for row in results:
+                # Convert Row object to dictionary
+                row_dict = dict(row.items())
+                rows_list.append(row_dict)
+
+            return rows_list
+
+        except Exception as e:
+            raise RuntimeError(f"BigQuery query failed: {e}")
+
+    @staticmethod
+    def get_channels_to_process(
+        chunk_size: int = 80,
+        idle_days: int = 7,
+        channel_urls: 'Optional[List[str]]' = None
+    ) -> 'Any':
+        """
+        获取需要处理的所有未分析消息（SQL 层面过滤）
+
+        触发条件（针对每个 channel）：
+        1. 未分析消息数 >= chunk_size，或
+        2. 最后一条未分析消息距今 >= idle_days 天
+
+        Args:
+            chunk_size: 触发分析的消息数量阈值（默认 80）
+            idle_days: 触发分析的空闲天数阈值（默认 7）
+            channel_urls: 可选的 channel URL 列表，如果提供则只检查这些 channels
+
+        Returns:
+            DataFrame 包含 support_message 的所有列，包括满足触发条件的 channels 的所有未分析消息
+            按 channel_url, created_time, message_id 排序
+        """
+        # 构建 SQL 和参数
+        if channel_urls:
+            channel_filter = "AND sm.channel_url IN UNNEST(@channel_urls)"
+            query_params = [
+                {"name": "chunk_size", "type": "INT64", "value": chunk_size},
+                {"name": "idle_days", "type": "INT64", "value": idle_days},
+                {"name": "channel_urls", "type": "ARRAY<STRING>", "value": channel_urls}
+            ]
+        else:
+            channel_filter = ""
+            query_params = [
+                {"name": "chunk_size", "type": "INT64", "value": chunk_size},
+                {"name": "idle_days", "type": "INT64", "value": idle_days}
+            ]
+
+        sql = f"""
+        WITH channel_stats AS (
+            SELECT
+                sm.channel_url,
+                COUNT(*) as unanalyzed_count,
+                MAX(sm.created_time) as last_message_time
+            FROM `plantstory.public.support_message` sm
+            WHERE sm.deleted = FALSE
+              AND sm.created_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 90 DAY)
+              {channel_filter}
+              AND NOT EXISTS (
+                SELECT 1
+                FROM `plantstory.customer_service.support_message_cases` seg,
+                UNNEST(seg.message_id_list) AS message_id
+                WHERE seg.channel_url = sm.channel_url
+                  AND message_id = CAST(sm.message_id AS STRING)
+              )
+            GROUP BY sm.channel_url
+            HAVING COUNT(*) >= @chunk_size
+               OR TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), MAX(sm.created_time), DAY) >= @idle_days
+        )
+        SELECT sm.*
+        FROM `plantstory.public.support_message` sm
+        INNER JOIN channel_stats cs ON sm.channel_url = cs.channel_url
+        WHERE sm.deleted = FALSE
+          AND sm.created_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 90 DAY)
+          AND NOT EXISTS (
+            SELECT 1
+            FROM `plantstory.customer_service.support_message_cases` seg,
+            UNNEST(seg.message_id_list) AS message_id
+            WHERE seg.channel_url = sm.channel_url
+              AND message_id = CAST(sm.message_id AS STRING)
+          )
+        ORDER BY sm.channel_url, sm.created_time, sm.message_id
+        """
+
+        import pandas as pd
+        results = Utils.query_bigquery(sql, query_params)
+        return pd.DataFrame(results)
+
+    @staticmethod
+    def preprocess_dataframe(df: 'pd.DataFrame', verbose: bool = True) -> 'pd.DataFrame':
+        """
+        预处理 DataFrame，准备用于消息分段处理
+
+        此方法从 Session.process_file_data() 提取，用于复用预处理逻辑
+
+        处理步骤：
+        0. 自动检测并转换列名（snake_case → Title Case）
+        1. 过滤 Deleted = True 的行
+        2. 添加 role 列（基于 Sender ID 模式）
+        3. 排序（Channel URL, Created Time, Message ID）
+        4. 添加 File Summary 列（用于存储 vision 分析结果）
+        5. 生成包含必需列的 clean DataFrame
+
+        Args:
+            df: 原始 DataFrame（支持两种列名格式：snake_case 或 Title Case）
+            verbose: 是否打印处理日志
+
+        Returns:
+            处理后的 clean DataFrame，包含必需列
+        """
+        import pandas as pd
+
+        if verbose:
+            print("Starting DataFrame preprocessing...")
+
+        # 0. Auto-detect and convert column names if needed
+        # Check if DataFrame uses snake_case (BigQuery format) by looking for key column
+        if 'message_id' in df.columns:
+            if verbose:
+                print("        Detected snake_case column names (BigQuery format), converting to Title Case...")
+
+            # Define column mapping from snake_case to Title Case
+            column_mapping = {
+                'message_id': 'Message ID',
+                'type': 'Type',
+                'message': 'Message',
+                'raw': 'Raw',
+                'sender_id': 'Sender ID',
+                'real_sender_id': 'Real Sender ID',
+                'created_time': 'Created Time',
+                'updated_time': 'Updated Time',
+                'channel_url': 'Channel URL',
+                'file_content_size': 'File Content Size',
+                'file_content_type': 'File Content Type',
+                'file_url': 'File URL',
+                'filename': 'Filename',
+                'sender_type': 'Sender Type',
+                'datastream_metadata': 'Datastream Metadata',
+                'deleted': 'Deleted',
+                'ticket_id': 'Ticket ID'
+            }
+
+            # Count columns to rename before renaming
+            columns_to_rename = {k: v for k, v in column_mapping.items() if k in df.columns}
+
+            # Rename columns that exist in the DataFrame
+            df = df.rename(columns=columns_to_rename)
+
+            if verbose:
+                print(f"        Converted {len(columns_to_rename)} column names to Title Case")
+        elif 'Message ID' in df.columns:
+            if verbose:
+                print("        Detected Title Case column names (CSV format), no conversion needed")
+        else:
+            if verbose:
+                print("        ⚠️  Warning: Could not detect column format (neither 'message_id' nor 'Message ID' found)")
+
+        # 1. Filter out rows where Deleted = True
+        if 'Deleted' in df.columns:
+            original_count = len(df)
+            df = df[df['Deleted'] != True].reset_index(drop=True)
+            filtered_count = original_count - len(df)
+            if verbose:
+                print(f"        Filtered out {filtered_count} deleted rows ({len(df)} remaining)")
+        else:
+            if verbose:
+                print("        No 'Deleted' column found, skipping deletion filter")
+
+        # 2. Add role column based on Sender ID pattern
+        if 'role' not in df.columns:
+            df['role'] = df['Sender ID'].apply(
+                lambda x: 'customer_service' if str(x).startswith('psops') else 'user'
+            )
+            if verbose:
+                print(f"        Added role column: {df['role'].value_counts().to_dict()}")
+        else:
+            if verbose:
+                print("        Role column already exists, skipping...")
+
+        # 3. Sort data by Channel URL, Created Time, then Message ID
+        # Note: Created Time is kept as ISO 8601 string format for correct lexicographic sorting
+        df = df.sort_values([
+            'Channel URL',
+            'Created Time',
+            'Message ID'
+        ]).reset_index(drop=True)
+        if verbose:
+            print(f"        Sorted data by Channel URL, Created Time, and Message ID")
+
+        # 4. Add File Summary column for vision analysis results
+        if 'File Summary' not in df.columns:
+            df['File Summary'] = ''
+            if verbose:
+                print(f"        Added File Summary column for storing vision analysis results")
+
+        # 5. Generate clean DataFrame with essential columns
+        essential_columns = [
+            'Created Time', 'Sender ID', 'Message', 'Channel URL',
+            'role', 'Message ID', 'Type', 'File URL', 'File Summary'
+        ]
+        available_columns = [col for col in essential_columns if col in df.columns]
+        df_clean = df[available_columns].copy()
+        if verbose:
+            print(f"        Created clean DataFrame with {len(available_columns)} columns: {available_columns}")
+
+        if verbose:
+            print(f"        Processed {len(df_clean)} messages across {df_clean['Channel URL'].nunique()} channels")
+
+        # 6. Display channel summary
+        if verbose:
+            for channel_url in df_clean['Channel URL'].unique():
+                channel_df = df_clean[df_clean['Channel URL'] == channel_url]
+                print(f"                Channel: {Utils.format_channel_for_display(channel_url)} - {len(channel_df)} messages")
+
+        return df_clean

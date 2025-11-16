@@ -512,6 +512,33 @@ class Channel:
             print(f"                ❌ Error saving CSV file: {e}")
             raise
 
+    def save_results_to_bigquery(self) -> int:
+        """
+        Save all cases to BigQuery
+
+        遍历所有 cases，调用每个 case 的 save_to_bigquery() 方法
+
+        Returns:
+            成功保存的 case 数量
+        """
+        if not self.cases:
+            print("⚠️  No cases to save")
+            return 0
+
+        print(f"💾 Saving {len(self.cases)} cases to BigQuery...")
+        saved_count = 0
+
+        for i, case in enumerate(self.cases, 1):
+            try:
+                case.save_to_bigquery()
+                saved_count += 1
+                print(f"   ✅ [{i}/{len(self.cases)}] Saved case: {case.case_id}")
+            except Exception as e:
+                print(f"   ❌ [{i}/{len(self.cases)}] Failed to save case {case.case_id}: {e}")
+
+        print(f"✅ Successfully saved {saved_count}/{len(self.cases)} cases to BigQuery")
+        return saved_count
+
     def repair_case_segment_output(self, cases: List[Dict[str, Any]],
                                  chunk_df: pd.DataFrame,
                                  prev_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

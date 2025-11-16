@@ -354,6 +354,67 @@ class Case:
         else:
             print("    Messages: No messages available")
 
+    def save_to_bigquery(self) -> None:
+        """
+        将当前case保存到BigQuery support_message_segmentation表
+
+        将额外字段存入meta_data JSON字段：
+        - pending_party, handle_time, total_msg_num
+        - tracking_numbers, order_numbers, user_names
+
+        Raises:
+            RuntimeError: 插入失败时抛出异常
+        """
+        from google.cloud import bigquery
+        from google.oauth2 import service_account
+        import json
+        import os
+
+        # 构建meta_data JSON
+        meta_data = {
+            "pending_party": self.pending_party,
+            "handle_time": self.handle_time if self.handle_time != -1 else None,
+            "total_msg_num": self.total_msg_num if self.total_msg_num != -1 else None,
+            "tracking_numbers": self.meta.tracking_numbers if self.meta else [],
+            "order_numbers": self.meta.order_numbers if self.meta else [],
+            "user_names": self.meta.user_names if self.meta else []
+        }
+
+        # 构建行数据
+        row = {
+            "case_id": self.case_id,
+            "channel_url": self.channel_url,
+            "summary": self.summary,
+            "status": self.status,
+            "segmentation_confidence": self.segmentation_confidence,
+            "main_category": self.main_category or '',
+            "sub_category": self.sub_category or '',
+            "classification_confidence": self.classification_confidence or 0.0,
+            "first_res_time": self.first_res_time if self.first_res_time != -1 else None,
+            "first_contact_resolution": self.first_contact_resolution if self.first_contact_resolution != -1 else None,
+            "usr_msg_num": self.usr_msg_num if self.usr_msg_num != -1 else None,
+            "start_time": self.start_time,
+            "end_time": self.end_time,
+            "message_id_list": [str(msg_id) for msg_id in self.message_id_list],
+            "meta_data": json.dumps(meta_data, ensure_ascii=False)
+        }
+
+        # 获取BigQuery client
+        credentials_json = os.getenv('BIGQUERY_CREDENTIALS_JSON')
+        if not credentials_json:
+            raise ValueError("BIGQUERY_CREDENTIALS_JSON environment variable not set")
+
+        credentials_dict = json.loads(credentials_json)
+        credentials = service_account.Credentials.from_service_account_info(credentials_dict)
+        client = bigquery.Client(credentials=credentials, project='plantstory')
+
+        # 插入数据
+        table_id = 'plantstory.customer_service.support_message_cases'
+        errors = client.insert_rows_json(table_id, [row])
+
+        if errors:
+            raise RuntimeError(f"Failed to insert case {self.case_id} to BigQuery: {errors}")
+
 
 # ----------------------------
 # LLM-Compatible Models
