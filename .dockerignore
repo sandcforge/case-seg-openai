@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Environment files
+.env
+.env.*
+
+# Output directories
+out/
+debug_output/
+tmp/
+
+# Testing
+unit_test/
+.pytest_cache/
+
+# Assets (usually not needed in container)
+assets/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+prd.md
+
+# Deployment files
+deploy.sh
+setup_scheduler.sh
+.dockerignore
+Dockerfile
+
+# App files not needed
+app/
+claude.md
