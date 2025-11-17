@@ -375,7 +375,8 @@ class Case:
             "total_msg_num": self.total_msg_num if self.total_msg_num != -1 else None,
             "tracking_numbers": self.meta.tracking_numbers if self.meta else [],
             "order_numbers": self.meta.order_numbers if self.meta else [],
-            "user_names": self.meta.user_names if self.meta else []
+            "user_names": self.meta.user_names if self.meta else [],
+            "messages": self.messages_to_dict  # 将 messages DataFrame 转换为 dict list
         }
 
         # 构建行数据
