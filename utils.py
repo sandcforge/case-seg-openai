@@ -22,7 +22,33 @@ class Utils:
         if '_' not in channel_url:
             return channel_url
         return channel_url.split('_')[-1]
-    
+
+    @staticmethod
+    def generate_short_case_id() -> str:
+        """
+        生成短 UUID 作为 case_id
+
+        使用 Base64 URL-safe 编码的 UUID4，长度为 22 字符
+
+        Returns:
+            22 字符的唯一 ID，例如：'VQ6EAOKbQdSnFkRmVUQAAA'
+
+        Example:
+            >>> case_id = Utils.generate_short_case_id()
+            >>> len(case_id)
+            22
+            >>> # 每次调用生成不同的 ID
+            >>> id1 = Utils.generate_short_case_id()
+            >>> id2 = Utils.generate_short_case_id()
+            >>> id1 != id2
+            True
+        """
+        import uuid
+        import base64
+
+        uuid_bytes = uuid.uuid4().bytes
+        return base64.urlsafe_b64encode(uuid_bytes).rstrip(b'=').decode('ascii')
+
     @staticmethod
     def format_messages_for_prompt2(chunk_df) -> str:
         """

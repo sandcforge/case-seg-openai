@@ -181,7 +181,7 @@ class Channel:
             
             # Create Case object from dictionary
             case_obj = Case(
-                case_id=f'case_{idx:03d}',
+                case_id=Utils.generate_short_case_id(),
                 channel_url=self.channel_url,
                 message_id_list=message_id_list,
                 messages=case_messages,
