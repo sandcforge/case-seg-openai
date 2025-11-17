@@ -67,17 +67,15 @@ class Case:
     
     @property
     def messages_to_dict(self) -> List[Dict[str, Any]]:
-        """Convert messages DataFrame to list of dictionaries, handling datetime serialization"""
-        return self.messages.to_dict(orient='records')
+        """Convert messages DataFrame to list of dictionaries.
 
-
-    def message_id_list(self) -> List[str]:
-        """Get list of Message IDs from the messages DataFrame"""
+        Note: Timestamp columns are already converted to ISO format strings
+        during preprocessing in Utils.preprocess_dataframe()
+        """
         if self.messages is None or self.messages.empty:
             return []
-        if 'Message ID' not in self.messages.columns:
-            return []
-        return self.messages['Message ID'].tolist()
+
+        return self.messages.to_dict(orient='records')
 
     @property
     def start_time(self) -> Optional[str]:
@@ -395,7 +393,7 @@ class Case:
             "usr_msg_num": self.usr_msg_num if self.usr_msg_num != -1 else None,
             "start_time": self.start_time,
             "end_time": self.end_time,
-            "message_id_list": [str(msg_id) for msg_id in self.message_id_list],
+            "message_id_list": self.message_id_list,  # INTEGER REPEATED in BigQuery
             "meta_data": json.dumps(meta_data, ensure_ascii=False)
         }
 

@@ -134,9 +134,9 @@ def main():
         try:
             # Create and process Channel
             channel = Channel(
-                df=channel_df,
+                df_clean=channel_df,
                 channel_url=channel_url,
-                session_name=session_name,
+                session=session_name,
                 chunk_size=args.chunk_size,
                 overlap=0,  # Fixed at 0 for BigQuery processing
                 enable_classification=args.enable_classification,

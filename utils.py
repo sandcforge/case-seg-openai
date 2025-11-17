@@ -389,9 +389,17 @@ class Utils:
                     if not param_name:
                         raise ValueError("Query parameter missing 'name' field")
 
-                    bq_params.append(
-                        bigquery.ScalarQueryParameter(param_name, param_type, param_value)
-                    )
+                    # Check if parameter is an array type
+                    if param_type.startswith('ARRAY'):
+                        # Extract element type from ARRAY<TYPE>
+                        element_type = param_type.replace('ARRAY<', '').replace('>', '')
+                        bq_params.append(
+                            bigquery.ArrayQueryParameter(param_name, element_type, param_value)
+                        )
+                    else:
+                        bq_params.append(
+                            bigquery.ScalarQueryParameter(param_name, param_type, param_value)
+                        )
 
                 job_config = bigquery.QueryJobConfig(query_parameters=bq_params)
 
@@ -465,7 +473,7 @@ class Utils:
                 FROM `plantstory.customer_service.support_message_cases` seg,
                 UNNEST(seg.message_id_list) AS message_id
                 WHERE seg.channel_url = sm.channel_url
-                  AND message_id = CAST(sm.message_id AS STRING)
+                  AND message_id = CAST(sm.message_id AS INT64)
               )
             GROUP BY sm.channel_url
             HAVING COUNT(*) >= @chunk_size
@@ -481,7 +489,7 @@ class Utils:
             FROM `plantstory.customer_service.support_message_cases` seg,
             UNNEST(seg.message_id_list) AS message_id
             WHERE seg.channel_url = sm.channel_url
-              AND message_id = CAST(sm.message_id AS STRING)
+              AND message_id = CAST(sm.message_id AS INT64)
           )
         ORDER BY sm.channel_url, sm.created_time, sm.message_id
         """
@@ -552,6 +560,13 @@ class Utils:
 
             if verbose:
                 print(f"        Converted {len(columns_to_rename)} column names to Title Case")
+
+            # Ensure Message ID is integer type (BigQuery returns it as string)
+            if 'Message ID' in df.columns:
+                df['Message ID'] = df['Message ID'].astype(int)
+                if verbose:
+                    print(f"        Converted Message ID to integer type")
+
         elif 'Message ID' in df.columns:
             if verbose:
                 print("        Detected Title Case column names (CSV format), no conversion needed")
@@ -607,10 +622,24 @@ class Utils:
         if verbose:
             print(f"        Created clean DataFrame with {len(available_columns)} columns: {available_columns}")
 
+        # 6. Convert Timestamp columns to ISO format strings
+        timestamp_columns = ['Created Time', 'Updated Time']
+        for col in timestamp_columns:
+            if col in df_clean.columns:
+                # Check if column contains Timestamp objects
+                if pd.api.types.is_datetime64_any_dtype(df_clean[col]):
+                    df_clean[col] = pd.to_datetime(df_clean[col]).apply(lambda x: x.isoformat() if pd.notna(x) else None)
+                    if verbose:
+                        print(f"        Converted {col} to ISO format strings")
+                elif df_clean[col].apply(lambda x: isinstance(x, pd.Timestamp)).any():
+                    df_clean[col] = df_clean[col].apply(lambda x: x.isoformat() if isinstance(x, pd.Timestamp) else x)
+                    if verbose:
+                        print(f"        Converted {col} to ISO format strings")
+
         if verbose:
             print(f"        Processed {len(df_clean)} messages across {df_clean['Channel URL'].nunique()} channels")
 
-        # 6. Display channel summary
+        # 7. Display channel summary
         if verbose:
             for channel_url in df_clean['Channel URL'].unique():
                 channel_df = df_clean[df_clean['Channel URL'] == channel_url]
