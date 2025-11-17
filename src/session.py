@@ -15,10 +15,15 @@ from datetime import datetime
 from typing import List, Optional
 import pandas as pd # type: ignore
 
-# Local imports
-from channel import Channel
-from llm_client import LLMClient
-from utils import Utils
+# Local imports - compatible with both direct execution and module execution
+try:
+    from .channel import Channel
+    from .llm_client import LLMClient
+    from .utils import Utils
+except ImportError:
+    from channel import Channel
+    from llm_client import LLMClient
+    from utils import Utils
 
 
 class Session:

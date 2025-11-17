@@ -17,10 +17,16 @@ from datetime import datetime
 from pydantic import BaseModel, Field  # type: ignore
 
 # Import Utils for message formatting
-from utils import Utils
+try:
+    from .utils import Utils
+except ImportError:
+    from utils import Utils
 
 if TYPE_CHECKING:
-    from llm_client import LLMClient
+    try:
+        from .llm_client import LLMClient
+    except ImportError:
+        from llm_client import LLMClient
 
 
 # ----------------------------

@@ -9,12 +9,23 @@ customer service representatives.
 
 import pandas as pd  # type: ignore
 from typing import Dict, Any, List, Optional, TYPE_CHECKING
-from utils import Utils
+
+# Local imports - compatible with both direct execution and module execution
+try:
+    from .utils import Utils
+except ImportError:
+    from utils import Utils
 
 if TYPE_CHECKING:
-    from llm_client import LLMClient, VisionResponse
+    try:
+        from .llm_client import LLMClient, VisionResponse
+    except ImportError:
+        from llm_client import LLMClient, VisionResponse
 else:
-    from llm_client import VisionResponse
+    try:
+        from .llm_client import VisionResponse
+    except ImportError:
+        from llm_client import VisionResponse
 
 
 class VisionProcessor:

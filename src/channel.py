@@ -11,15 +11,24 @@ This module contains the Channel class that handles:
 import os
 import pandas as pd  # type: ignore
 from typing import List, Dict, Any, TYPE_CHECKING, Optional
-from case import Case, MetaInfo, CasesSegmentationListLLMRes
-from utils import Utils
 import copy
 from collections import defaultdict
 
-if TYPE_CHECKING:
-    from llm_client import LLMClient
+# Local imports - compatible with both direct execution and module execution
+try:
+    from .case import Case, MetaInfo, CasesSegmentationListLLMRes
+    from .utils import Utils
+    from .vision_processor import VisionProcessor
+except ImportError:
+    from case import Case, MetaInfo, CasesSegmentationListLLMRes
+    from utils import Utils
+    from vision_processor import VisionProcessor
 
-from vision_processor import VisionProcessor
+if TYPE_CHECKING:
+    try:
+        from .llm_client import LLMClient
+    except ImportError:
+        from llm_client import LLMClient
 
 
 class Channel:

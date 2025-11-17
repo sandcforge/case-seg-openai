@@ -26,10 +26,15 @@ import argparse
 from datetime import datetime
 from dotenv import load_dotenv
 
-# Local imports
-from utils import Utils
-from channel import Channel
-from llm_client import LLMClient
+# Local imports - compatible with both direct execution and module execution
+try:
+    from .utils import Utils
+    from .channel import Channel
+    from .llm_client import LLMClient
+except ImportError:
+    from utils import Utils
+    from channel import Channel
+    from llm_client import LLMClient
 
 
 def main():
