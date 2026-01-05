@@ -16,9 +16,13 @@ Example:
 import argparse
 from dotenv import load_dotenv # type: ignore
 
-# Local imports
-from session import Session
-from utils import Utils
+# Local imports - compatible with both direct execution and module execution
+try:
+    from .session import Session
+    from .utils import Utils
+except ImportError:
+    from session import Session
+    from utils import Utils
 
 # Load environment variables
 load_dotenv()

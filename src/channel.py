@@ -11,15 +11,24 @@ This module contains the Channel class that handles:
 import os
 import pandas as pd  # type: ignore
 from typing import List, Dict, Any, TYPE_CHECKING, Optional
-from case import Case, MetaInfo, CasesSegmentationListLLMRes
-from utils import Utils
 import copy
 from collections import defaultdict
 
-if TYPE_CHECKING:
-    from llm_client import LLMClient
+# Local imports - compatible with both direct execution and module execution
+try:
+    from .case import Case, MetaInfo, CasesSegmentationListLLMRes
+    from .utils import Utils
+    from .vision_processor import VisionProcessor
+except ImportError:
+    from case import Case, MetaInfo, CasesSegmentationListLLMRes
+    from utils import Utils
+    from vision_processor import VisionProcessor
 
-from vision_processor import VisionProcessor
+if TYPE_CHECKING:
+    try:
+        from .llm_client import LLMClient
+    except ImportError:
+        from llm_client import LLMClient
 
 
 class Channel:
@@ -181,7 +190,7 @@ class Channel:
             
             # Create Case object from dictionary
             case_obj = Case(
-                case_id=f'case_{idx:03d}',
+                case_id=Utils.generate_short_case_id(),
                 channel_url=self.channel_url,
                 message_id_list=message_id_list,
                 messages=case_messages,
@@ -447,6 +456,9 @@ class Channel:
     
     def save_results_to_csv(self, output_dir: str) -> None:
         """Save annotated messages to CSV file"""
+        # Note: File Summary is restored from case.messages during CSV export
+        # (case.messages contains the vision analysis data even if df_clean lost it)
+
         # Generate annotated CSV for this channel
         df_annotated = self.df_clean.copy()
         df_annotated['case_id'] = "unassigned"  # Default: unassigned (string type)
@@ -457,12 +469,26 @@ class Channel:
         df_annotated['sop_score'] = 0.0
 
         # Map case assignments and classification data using Message ID
+        # Also restore File Summary from case.messages (in case df_clean lost it)
         for case_obj in self.cases:
             case_id = case_obj.case_id or "unknown"
             main_category = case_obj.main_category
             sub_category = case_obj.sub_category
             sop_url = case_obj.sop_url
             sop_score = case_obj.sop_score
+
+            # Build a mapping from Message ID to File Summary from case.messages
+            if case_obj.messages is not None and not case_obj.messages.empty:
+                if 'File Summary' in case_obj.messages.columns:
+                    file_summary_map = dict(zip(
+                        case_obj.messages['Message ID'],
+                        case_obj.messages['File Summary']
+                    ))
+                else:
+                    file_summary_map = {}
+            else:
+                file_summary_map = {}
+
             for message_id in case_obj.message_id_list:
                 mask = df_annotated['Message ID'] == message_id
                 df_annotated.loc[mask, 'case_id'] = case_id
@@ -470,6 +496,16 @@ class Channel:
                 df_annotated.loc[mask, 'sub_category'] = sub_category
                 df_annotated.loc[mask, 'sop_url'] = sop_url
                 df_annotated.loc[mask, 'sop_score'] = sop_score
+
+                # Restore File Summary from case.messages if available
+                if message_id in file_summary_map:
+                    file_summary_value = file_summary_map[message_id]
+                    # Only update if it's not empty/NaN
+                    if pd.notna(file_summary_value) and str(file_summary_value).strip():
+                        # Ensure File Summary column is object dtype before assigning string
+                        if df_annotated['File Summary'].dtype != 'object':
+                            df_annotated['File Summary'] = df_annotated['File Summary'].astype('object')
+                        df_annotated.loc[mask, 'File Summary'] = str(file_summary_value)
         
         # Create session folder for organized output (same folder as JSON)
         session_folder = os.path.join(output_dir, f"session_{self.session}")
@@ -484,6 +520,33 @@ class Channel:
         except IOError as e:
             print(f"                ❌ Error saving CSV file: {e}")
             raise
+
+    def save_results_to_bigquery(self) -> int:
+        """
+        Save all cases to BigQuery
+
+        遍历所有 cases，调用每个 case 的 save_to_bigquery() 方法
+
+        Returns:
+            成功保存的 case 数量
+        """
+        if not self.cases:
+            print("⚠️  No cases to save")
+            return 0
+
+        print(f"💾 Saving {len(self.cases)} cases to BigQuery...")
+        saved_count = 0
+
+        for i, case in enumerate(self.cases, 1):
+            try:
+                case.save_to_bigquery()
+                saved_count += 1
+                print(f"   ✅ [{i}/{len(self.cases)}] Saved case: {case.case_id}")
+            except Exception as e:
+                print(f"   ❌ [{i}/{len(self.cases)}] Failed to save case {case.case_id}: {e}")
+
+        print(f"✅ Successfully saved {saved_count}/{len(self.cases)} cases to BigQuery")
+        return saved_count
 
     def repair_case_segment_output(self, cases: List[Dict[str, Any]],
                                  chunk_df: pd.DataFrame,
@@ -894,10 +957,10 @@ class Channel:
                 
                 # Generate synthesized text summary using static method
                 summary_text = VisionProcessor.synthesize_visual_text(analysis_result)
-                
+
                 # Update File Summary in df_clean
                 self.df_clean.loc[df_idx, 'File Summary'] = summary_text
-                
+
                 processed_count += 1
                 
             except Exception as e:

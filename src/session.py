@@ -15,10 +15,15 @@ from datetime import datetime
 from typing import List, Optional
 import pandas as pd # type: ignore
 
-# Local imports
-from channel import Channel
-from llm_client import LLMClient
-from utils import Utils
+# Local imports - compatible with both direct execution and module execution
+try:
+    from .channel import Channel
+    from .llm_client import LLMClient
+    from .utils import Utils
+except ImportError:
+    from channel import Channel
+    from llm_client import LLMClient
+    from utils import Utils
 
 
 class Session:
@@ -198,7 +203,7 @@ class Session:
             True if processing successful, False otherwise
         """
         print("Starting file processing...")
-        
+
         # 1. Load CSV data into DataFrame
         try:
             self.df = pd.read_csv(self.input_file)
@@ -206,54 +211,10 @@ class Session:
         except Exception as e:
             print(f"Error loading file {self.input_file}: {e}")
             return False
-        
-        # 2. Filter out rows where Deleted = True
-        if 'Deleted' in self.df.columns:
-            original_count = len(self.df)
-            self.df = self.df[self.df['Deleted'] != True].reset_index(drop=True)
-            filtered_count = original_count - len(self.df)
-            print(f"        Filtered out {filtered_count} deleted rows ({len(self.df)} remaining)")
-        else:
-            print("No 'Deleted' column found, skipping deletion filter")
-        
-        # 3. Add role column based on Sender ID pattern
-        if 'role' not in self.df.columns:
-            self.df['role'] = self.df['Sender ID'].apply(
-                lambda x: 'customer_service' if str(x).startswith('psops') else 'user'
-            )
-            print(f"        Added role column: {self.df['role'].value_counts().to_dict()}")
-        else:
-            print("Role column already exists, skipping...")
-        
-        # 4. Sort data by Channel URL, Created Time, then Message ID
-        # Note: Created Time is kept as ISO 8601 string format for correct lexicographic sorting
-        self.df = self.df.sort_values([
-            'Channel URL',
-            'Created Time',
-            'Message ID'
-        ]).reset_index(drop=True)
-        print(f"        Sorted data by Channel URL, Created Time, and Message ID")
 
-        # 5. Add File Summary column for vision analysis results
-        self.df['File Summary'] = ''
-        print(f"        Added File Summary column for storing vision analysis results")
+        # 2-6. Preprocess DataFrame using Utils method
+        self.df_clean = Utils.preprocess_dataframe(self.df, verbose=True)
 
-        # 6. Generate clean DataFrame with essential columns
-        essential_columns = [
-            'Created Time', 'Sender ID', 'Message', 'Channel URL',
-            'role', 'Message ID', 'Type', 'File URL', 'File Summary'
-        ]
-        available_columns = [col for col in essential_columns if col in self.df.columns]
-        self.df_clean = self.df[available_columns].copy()
-        print(f"        Created clean DataFrame with {len(available_columns)} columns: {available_columns}")
-        
-        print(f"        Processed {len(self.df_clean)} messages across {self.df_clean['Channel URL'].nunique()} channels")
-        
-        # 8. Display channel summary
-        for channel_url in self.df_clean['Channel URL'].unique():
-            channel_df = self.df_clean[self.df_clean['Channel URL'] == channel_url]
-            print(f"                Channel: {Utils.format_channel_for_display(channel_url)} - {len(channel_df)} messages")
-        
         return True
 
     def create_session_folder(self) -> None:

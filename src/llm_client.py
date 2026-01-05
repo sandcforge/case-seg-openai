@@ -285,7 +285,9 @@ class LLMClient:
     
     def load_prompt(self, filename: str) -> str:
         """Load prompt template from prompts directory"""
-        prompt_path = os.path.join("prompts", filename)
+        # Get the directory where this script is located (src/)
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        prompt_path = os.path.join(script_dir, "prompts", filename)
         try:
             with open(prompt_path, 'r', encoding='utf-8') as f:
                 return f.read()
