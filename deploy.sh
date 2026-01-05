@@ -91,7 +91,7 @@ gcloud run jobs deploy ${JOB_NAME} \
   --region ${REGION} \
   --project ${PROJECT_ID} \
   --max-retries 0 \
-  --task-timeout 72000 \
+  --task-timeout 84600 \
   --parallelism 1 \
   --tasks 1 \
   --set-secrets "OPENAI_API_KEY=openai-sheng-customer-service-case-analysis:latest,BIGQUERY_CREDENTIALS_JSON=bigquery-sheng-customer-service-ai:latest" \

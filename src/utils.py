@@ -456,9 +456,14 @@ class Utils:
         """
         获取需要处理的所有未分析消息（SQL 层面过滤）
 
-        触发条件（针对每个 channel）：
-        1. 未分析消息数 >= chunk_size，或
-        2. 最后一条未分析消息距今 >= idle_days 天
+        触发条件和处理策略（针对每个 channel）：
+        1. 未分析消息数 < chunk_size:
+           - 如果最后一条消息距今 >= idle_days 天 → 处理所有消息
+           - 否则 → 不处理
+        2. 未分析消息数 >= chunk_size:
+           - 只处理 chunk_size 的整数倍数量
+           - 余数保留，等待下次处理
+           - 例如：90条 → 处理80条，保留10条；185条 → 处理160条，保留25条
 
         Args:
             chunk_size: 触发分析的消息数量阈值（默认 80）
@@ -466,7 +471,7 @@ class Utils:
             channel_urls: 可选的 channel URL 列表，如果提供则只检查这些 channels
 
         Returns:
-            DataFrame 包含 support_message 的所有列，包括满足触发条件的 channels 的所有未分析消息
+            DataFrame 包含 support_message 的所有列，只包含应该处理的消息
             按 channel_url, created_time, message_id 排序
         """
         # 构建 SQL 和参数
@@ -489,7 +494,19 @@ class Utils:
             SELECT
                 sm.channel_url,
                 COUNT(*) as unanalyzed_count,
-                MAX(sm.created_time) as last_message_time
+                MAX(sm.created_time) as last_message_time,
+                -- 计算应处理的消息数量
+                CASE
+                    -- 规则1: 小于 chunk_size 且 idle_days 触发 → 全部处理
+                    WHEN COUNT(*) < @chunk_size
+                         AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), MAX(sm.created_time), DAY) >= @idle_days
+                    THEN COUNT(*)
+                    -- 规则2: >= chunk_size → 处理整数倍，余数保留
+                    WHEN COUNT(*) >= @chunk_size
+                    THEN CAST(FLOOR(COUNT(*) / @chunk_size) * @chunk_size AS INT64)
+                    -- 其他情况：不处理
+                    ELSE 0
+                END as messages_to_process
             FROM `plantstory.public.support_message` sm
             WHERE sm.deleted = FALSE
               AND sm.created_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 90 DAY)
@@ -502,22 +519,32 @@ class Utils:
                   AND message_id = CAST(sm.message_id AS INT64)
               )
             GROUP BY sm.channel_url
-            HAVING COUNT(*) >= @chunk_size
-               OR TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), MAX(sm.created_time), DAY) >= @idle_days
+            HAVING messages_to_process > 0  -- 只返回有消息需要处理的 channel
+        ),
+        ranked_messages AS (
+            SELECT
+                sm.*,
+                cs.messages_to_process,
+                ROW_NUMBER() OVER (
+                    PARTITION BY sm.channel_url
+                    ORDER BY sm.created_time, sm.message_id
+                ) as row_num
+            FROM `plantstory.public.support_message` sm
+            INNER JOIN channel_stats cs ON sm.channel_url = cs.channel_url
+            WHERE sm.deleted = FALSE
+              AND sm.created_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 90 DAY)
+              AND NOT EXISTS (
+                SELECT 1
+                FROM `plantstory.customer_service.support_message_cases` seg,
+                UNNEST(seg.message_id_list) AS message_id
+                WHERE seg.channel_url = sm.channel_url
+                  AND message_id = CAST(sm.message_id AS INT64)
+              )
         )
-        SELECT sm.*
-        FROM `plantstory.public.support_message` sm
-        INNER JOIN channel_stats cs ON sm.channel_url = cs.channel_url
-        WHERE sm.deleted = FALSE
-          AND sm.created_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 90 DAY)
-          AND NOT EXISTS (
-            SELECT 1
-            FROM `plantstory.customer_service.support_message_cases` seg,
-            UNNEST(seg.message_id_list) AS message_id
-            WHERE seg.channel_url = sm.channel_url
-              AND message_id = CAST(sm.message_id AS INT64)
-          )
-        ORDER BY sm.channel_url, sm.created_time, sm.message_id
+        SELECT * EXCEPT(messages_to_process, row_num)
+        FROM ranked_messages
+        WHERE row_num <= messages_to_process
+        ORDER BY channel_url, created_time, message_id
         """
 
         import pandas as pd

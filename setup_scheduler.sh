@@ -6,7 +6,7 @@ PROJECT_ID="plantstory"
 REGION="us-central1"
 JOB_NAME="customer-service-case-analysis"
 SCHEDULER_NAME="customer-service-case-analysis-daily"
-SCHEDULE="0 2 * * *"  # Run at 2:00 AM every day (UTC)
+SCHEDULE="0 20 * * *"  # Run at 20:00 every day (UTC)
 TIMEZONE="America/Los_Angeles"  # Adjust to your timezone
 
 echo "=================================="
