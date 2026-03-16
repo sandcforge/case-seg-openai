@@ -81,7 +81,9 @@ class Case:
         if self.messages is None or self.messages.empty:
             return []
 
-        return self.messages.to_dict(orient='records')
+        # Replace NaN with None so json.dumps outputs standard null instead of invalid NaN
+        import numpy as np
+        return self.messages.replace({np.nan: None}).to_dict(orient='records')
 
     @property
     def start_time(self) -> Optional[str]:
