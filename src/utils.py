@@ -616,16 +616,29 @@ class Utils:
 
             # Ensure Message ID is integer type (BigQuery returns it as string)
             if 'Message ID' in df.columns:
-                df['Message ID'] = df['Message ID'].astype(int)
+                # Convert to numeric, invalid values become NaN
+                df['Message ID'] = pd.to_numeric(df['Message ID'], errors='coerce')
                 if verbose:
-                    print(f"        Converted Message ID to integer type")
+                    print(f"        Converted Message ID to numeric type")
 
         elif 'Message ID' in df.columns:
             if verbose:
                 print("        Detected Title Case column names (CSV format), no conversion needed")
+            # Still need to ensure Message ID is numeric (may contain None/NaN from CSV)
+            df['Message ID'] = pd.to_numeric(df['Message ID'], errors='coerce')
         else:
             if verbose:
                 print("        ⚠️  Warning: Could not detect column format (neither 'message_id' nor 'Message ID' found)")
+
+        # 0. Filter out rows where Message ID is NaN
+        if 'Message ID' in df.columns:
+            original_count = len(df)
+            df = df.dropna(subset=['Message ID']).reset_index(drop=True)
+            filtered_count = original_count - len(df)
+            if filtered_count > 0 and verbose:
+                print(f"        Filtered out {filtered_count} rows with invalid Message ID ({len(df)} remaining)")
+            # Convert to integer now that all NaN values are removed
+            df['Message ID'] = df['Message ID'].astype(int)
 
         # 1. Filter out rows where Deleted = True
         if 'Deleted' in df.columns:
