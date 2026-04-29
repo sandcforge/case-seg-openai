@@ -43,7 +43,7 @@ Existing pipeline behavior under the new schema:
 | **B1′** (revised) | Channel identity is `effective_channel_id = COALESCE(sm.ps_channel_id, mapping.canonical_pscid, sm.channel_url)`. The mapping comes from a CTE that pairs every channel_url to any one of its ps_channel_id values from rows that have both. This guarantees 0 rows lost (since both-NULL never occurs in window) while keeping cross-migration channels intact. The 1,308 pure-old channels stay keyed by channel_url — that's intentional and harmless because they have no future activity. | revised, yes |
 | C1 | On `support_message_cases`, **add** `id_list ARRAY<STRING>` and **`channel_id STRING`** columns. **Keep** `message_id_list` and `channel_url` as deprecated read-only history (NULL on new writes). No ALTER COLUMN, no separate v2 table. | yes (column renamed from `ps_channel_id` to `channel_id` because it can hold a channel_url for pure-old channels) |
 | Q1 | LLM prompt shows the full 21-char `id` (table column widened); LLM emits string IDs into the JSON key **`id_list`** (renamed from `message_id_list` for consistency with the BQ column). | yes (renamed) |
-| Q2 | Distance metric in `repair_case_segment_output` switches from `abs(int_id - int_id)` to channel-row-index distance via a new per-channel `msg_ch_idx` column. | yes |
+| Q2 | Distance metric in `repair_case_segment_output` switches from `abs(int_id - int_id)` to channel-row-index distance via a new per-channel `msg_ch_idx` column. **All `id_list` ordering inside the repair logic also uses `msg_ch_idx`, not lexicographic sort: the new id is a random nanoid, so string sort ≠ time order.** | yes |
 | **Q3′** (revised) | `format_channel_for_display`: if the value starts with `sendbird_`, take the trailing hash; otherwise (it's a 21-char nanoid that may itself contain `_`) return the first 8 chars for a tighter display. | revised because 28% of ps_channel_id values contain `_`, breaking the original "no underscore = nanoid" heuristic. |
 | Q4 | Dedup query joins on `id` only — no channel scope needed because `id` is globally unique. | yes |
 | **Cleanup** | **Delete** all cases with `start_time >= 2026-02-01` (~11,908). Backfill the remaining ~33,028 pre-Feb cases. Reprocess affected channels via the new code. `case_id` is not externally referenced; downstream impact is zero. | yes |
@@ -61,12 +61,12 @@ effective_channel_id = COALESCE(
 )
 ```
 
-Where `channel_mapping` is built from `support_message` rows that carry both:
+Where `channel_mapping` is built from `support_message` rows that carry both. 6 channel_urls in prod map to 2 distinct ps_channel_ids each — the `ORDER BY ps_channel_id` makes the choice deterministic across runs.
 
 ```sql
 WITH channel_mapping AS (
   SELECT channel_url,
-         ARRAY_AGG(DISTINCT ps_channel_id IGNORE NULLS LIMIT 1)[SAFE_OFFSET(0)] AS canonical_pscid
+         ARRAY_AGG(DISTINCT ps_channel_id IGNORE NULLS ORDER BY ps_channel_id LIMIT 1)[SAFE_OFFSET(0)] AS canonical_pscid
   FROM `plantstory.public.support_message`
   WHERE channel_url IS NOT NULL AND ps_channel_id IS NOT NULL
   GROUP BY channel_url
@@ -133,7 +133,7 @@ support_message_cases:
 | `src/utils.py::preprocess_dataframe` | Map BQ snake_case → DataFrame Title Case. **Keep** column name `Message ID` (values become str — drop int cast and NaN drop). Map `effective_channel_id` → `Channel ID`. Add `msg_ch_idx` per-channel row index. |
 | `src/utils.py::format_channel_for_display` | If starts with `sendbird_`, return trailing hash. Otherwise return the first 8 chars (the `_` heuristic is unsafe — 28% of ps_channel_id values contain `_`). |
 | `src/utils.py::format_messages_for_prompt2` | Widen Message ID column to 22 chars. |
-| `src/case.py` | Rename `Case.message_id_list` → `Case.id_list: List[str]`. Add `Case.channel_id: str`. Keep `Case.channel_url: str` (set to "" on new writes). Rename Pydantic `CaseSegmentationLLMRes.message_id_list` → `id_list: List[str]`. Update `CaseReviewInput.overlap_msg_ids: List[str]` and `ReviewAction.new_msg_assignment: Dict[str, int]`. Update `to_bigquery_row` to write `id_list` + `channel_id`; legacy `message_id_list` + `channel_url` NULL. |
+| `src/case.py` | Rename `Case.message_id_list` → `Case.id_list: List[str]`. Add `Case.channel_id: str`. Keep `Case.channel_url: str` (set to "" on new writes). Rename Pydantic `CaseSegmentationLLMRes.message_id_list` → `id_list: List[str]`. Update `CaseReviewInput.overlap_msg_ids: List[str]` and `ReviewAction.new_msg_assignment: Dict[str, int]`. Update `save_to_bigquery` (the method that builds the `row` dict) to write `id_list` + `channel_id`; legacy `message_id_list` + `channel_url` NULL. |
 | `src/channel.py` | All `case_dict['message_id_list']` → `case_dict['id_list']`. All `int` distance calls replaced with `msg_ch_idx`-based distance. `Channel.__init__` signature gains `channel_id: str` (replacing or alongside `channel_url`). All `case.message_id_list` references → `case.id_list`. |
 | `src/session.py` | `df['Channel URL']` group/sort uses → `df['Channel ID']`. `Channel(...)` instantiations adjusted to pass `channel_id`. `case.message_id_list` → `case.id_list` in serialization. |
 | `src/app_bigquery.py` | `df_clean['Channel URL']` grouping → `df_clean['Channel ID']`. Pass `channel_id` to Channel. |

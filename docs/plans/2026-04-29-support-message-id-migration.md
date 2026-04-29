@@ -243,7 +243,7 @@ MERGE `plantstory.customer_service.support_message_cases` AS target
 USING (
   WITH channel_mapping AS (
     SELECT channel_url,
-           ARRAY_AGG(DISTINCT ps_channel_id IGNORE NULLS LIMIT 1)[SAFE_OFFSET(0)] AS canonical_pscid
+           ARRAY_AGG(DISTINCT ps_channel_id IGNORE NULLS ORDER BY ps_channel_id LIMIT 1)[SAFE_OFFSET(0)] AS canonical_pscid
     FROM `plantstory.public.support_message`
     WHERE channel_url IS NOT NULL AND ps_channel_id IS NOT NULL
     GROUP BY channel_url
@@ -344,7 +344,7 @@ Edit `src/case.py`:
    new_msg_assignment: Dict[str, int] = Field(..., description="新的消息分配 {msg_id: case_index}")
    ```
 
-7. Update `to_bigquery_row` (lines ~380-407). Replace the `row` dict:
+7. Inside `Case.save_to_bigquery()` (lines ~380-407, where the `row` dict is constructed before `client.insert_rows_json`), replace the `row` dict:
 
    ```python
    row = {
@@ -449,7 +449,7 @@ Edit `src/utils.py`. Replace the entire `sql = f"""..."""` block in `get_channel
 sql = f"""
 WITH channel_mapping AS (
     SELECT channel_url,
-           ARRAY_AGG(DISTINCT ps_channel_id IGNORE NULLS LIMIT 1)[SAFE_OFFSET(0)] AS canonical_pscid
+           ARRAY_AGG(DISTINCT ps_channel_id IGNORE NULLS ORDER BY ps_channel_id LIMIT 1)[SAFE_OFFSET(0)] AS canonical_pscid
     FROM `plantstory.public.support_message`
     WHERE channel_url IS NOT NULL AND ps_channel_id IS NOT NULL
     GROUP BY channel_url
@@ -548,7 +548,7 @@ sample = Utils.query_bigquery(
     """
     WITH channel_mapping AS (
       SELECT channel_url,
-             ARRAY_AGG(DISTINCT ps_channel_id IGNORE NULLS LIMIT 1)[SAFE_OFFSET(0)] AS canonical_pscid
+             ARRAY_AGG(DISTINCT ps_channel_id IGNORE NULLS ORDER BY ps_channel_id LIMIT 1)[SAFE_OFFSET(0)] AS canonical_pscid
       FROM `plantstory.public.support_message`
       WHERE channel_url IS NOT NULL AND ps_channel_id IS NOT NULL
       GROUP BY channel_url
@@ -639,6 +639,12 @@ In `src/utils.py`:
    elif 'Message ID' in df.columns:
        if verbose:
            print("        Detected Title Case column names (CSV format), no conversion needed")
+       # CSV inputs predate the migration and only carry 'Channel URL'.
+       # Alias it as 'Channel ID' so downstream grouping/sorting works uniformly.
+       if 'Channel ID' not in df.columns and 'Channel URL' in df.columns:
+           df['Channel ID'] = df['Channel URL']
+           if verbose:
+               print("        CSV input: aliased Channel URL → Channel ID for grouping")
    else:
        if verbose:
            print("        ⚠️  Warning: Could not detect column format")
@@ -903,26 +909,35 @@ case_messages = self.df_clean[self.df_clean['Message ID'].astype(str).isin([str(
 In `src/channel.py:551-917`:
 
 1. Update docstring (line ~560) to:
-   > "id_list contains support_message.id values (21-char nanoids). chunk_df must have 'Message ID' (string) and 'msg_ch_idx' (int) columns."
+   > "id_list contains support_message.id values (21-char nanoids). chunk_df must have 'Message ID' (string) and 'msg_ch_idx' (int) columns. **All ordering inside this method is by `msg_ch_idx`, not by string id (the new id is a random nanoid; lexicographic ≠ time order).**"
 
-2. At the top of the method body, build the index-lookup helper:
+2. At the top of the method body, build the index-lookup helper and an idx-based sorter:
 
    ```python
    id_to_idx: Dict[str, int] = dict(zip(
        chunk_df['Message ID'].astype(str),
        chunk_df['msg_ch_idx'].astype(int)
    ))
+   _UNKNOWN_IDX = 10**9   # sentinel: unknown id sorts last
 
    def _idx_of(msg_id: str) -> Optional[int]:
        return id_to_idx.get(str(msg_id))
+
+   def _sorted_ids_by_idx(ids) -> List[str]:
+       """Deduplicate and sort by msg_ch_idx (chronological), not by string."""
+       return sorted({str(x) for x in ids}, key=lambda x: id_to_idx.get(x, _UNKNOWN_IDX))
+
+   def _case_min_idx(c: Dict[str, Any]) -> int:
+       idxs = [id_to_idx.get(str(m), _UNKNOWN_IDX) for m in c.get("id_list", [])]
+       return min(idxs) if idxs else _UNKNOWN_IDX
    ```
 
 3. Replace `c["message_id_list"] = sorted({int(x) for x in c["message_id_list"]})` (line ~604) with:
    ```python
-   c["id_list"] = sorted({str(x) for x in c.get("id_list", [])})
+   c["id_list"] = _sorted_ids_by_idx(c.get("id_list", []))
    ```
 
-4. Replace **every** other `message_id_list` reference inside this method with `id_list` (search the whole method).
+4. Replace **every** other `message_id_list` reference inside this method with `id_list` (search the whole method). Anywhere the old code sorted by integer id (`sorted(set(...))`), use `_sorted_ids_by_idx(...)` instead.
 
 5. Replace `_proximity_score` (line ~679):
    ```python
@@ -989,16 +1004,21 @@ In `src/channel.py:551-917`:
    chunk_set = set(chunk_msg_ids)
    ```
 
-10. Update `_attach_to_case` to append strings:
+10. Update `_attach_to_case` to append strings and re-sort by msg_ch_idx:
     ```python
     def _attach_to_case(msg_id: str, case_id: int, cases: List[Dict], provisionals: List[Dict], reason: str):
         if case_id < len(cases):
             cases[case_id]["id_list"].append(str(msg_id))
-            cases[case_id]["id_list"] = sorted(set(cases[case_id]["id_list"]))
+            cases[case_id]["id_list"] = _sorted_ids_by_idx(cases[case_id]["id_list"])
             ...
     ```
 
-11. Update final sort (line ~874): `out.sort(key=lambda c: c["id_list"][0])`.
+11. Update the case-level sorts. The original lexicographic-ish sort (line ~806) and the final sort (line ~874) should both be replaced with `out.sort(key=_case_min_idx)`. The original tiebreaker by `segmentation_confidence * -1` can be preserved as a secondary key:
+    ```python
+    out.sort(key=lambda c: (_case_min_idx(c), -float(c.get("segmentation_confidence", 0.0))))
+    ...
+    out.sort(key=_case_min_idx)
+    ```
 
 **Step 4: Update CSV writer**
 
@@ -1197,7 +1217,18 @@ git commit -m "feat(vision): accept string Message IDs"
 ### Task 4.4: Update `src/app_bigquery.py` driver
 
 **Files:**
-- Modify: `src/app_bigquery.py:130-150`
+- Modify: `src/app_bigquery.py` (multiple ranges: 108, 130-150)
+
+**Step 0: Update the upstream channel count**
+
+The pre-loop tally on line 108 reads `messages_df['channel_url']`, but the SQL output column is now `effective_channel_id` (and `channel_url` is NULL on most rows). Replace:
+```python
+unique_channels = messages_df['channel_url'].nunique()
+```
+with:
+```python
+unique_channels = messages_df['effective_channel_id'].nunique()
+```
 
 **Step 1: Group by `Channel ID`**
 
@@ -1293,7 +1324,7 @@ git commit -m "docs(prompts): update segmentation prompt for string ids"
 **Step 1: Pick a high-traffic channel with unprocessed messages**
 
 ```bash
-bq query --use_legacy_sql=false --format=pretty --max_rows=5 'WITH cm AS (SELECT channel_url, ARRAY_AGG(DISTINCT ps_channel_id IGNORE NULLS LIMIT 1)[SAFE_OFFSET(0)] AS p FROM `plantstory.public.support_message` WHERE channel_url IS NOT NULL AND ps_channel_id IS NOT NULL GROUP BY channel_url) SELECT COALESCE(sm.ps_channel_id, cm.p, sm.channel_url) AS effective_channel_id, COUNT(*) AS msgs FROM `plantstory.public.support_message` sm LEFT JOIN cm ON cm.channel_url = sm.channel_url WHERE sm.created_time >= TIMESTAMP("2026-03-01") AND sm.deleted = false GROUP BY 1 ORDER BY msgs DESC LIMIT 5'
+bq query --use_legacy_sql=false --format=pretty --max_rows=5 'WITH cm AS (SELECT channel_url, ARRAY_AGG(DISTINCT ps_channel_id IGNORE NULLS ORDER BY ps_channel_id LIMIT 1)[SAFE_OFFSET(0)] AS p FROM `plantstory.public.support_message` WHERE channel_url IS NOT NULL AND ps_channel_id IS NOT NULL GROUP BY channel_url) SELECT COALESCE(sm.ps_channel_id, cm.p, sm.channel_url) AS effective_channel_id, COUNT(*) AS msgs FROM `plantstory.public.support_message` sm LEFT JOIN cm ON cm.channel_url = sm.channel_url WHERE sm.created_time >= TIMESTAMP("2026-03-01") AND sm.deleted = false GROUP BY 1 ORDER BY msgs DESC LIMIT 5'
 ```
 
 Note one effective_channel_id with ~80-200 messages.
@@ -1412,29 +1443,68 @@ If the scheduler was paused, re-enable. Confirm the next run picks up zero work.
 
 ---
 
-## Phase 6: Post-deploy cleanup (separate change after stability window)
+## Phase 6: Post-deploy cleanup (separate changes, sequenced)
 
-### Task 6.1: After stability, drop legacy source columns
+The runtime SQL still references `channel_url` for the COALESCE fallback that keeps the 1,308 pure-old dead channels in scope. The 90-day rolling window slides past the last NULL-pscid row (`2026-03-27`) around **2026-06-25**. Both `support_message.message_id` and `support_message.channel_url` should only be dropped *after* the runtime SQL no longer reads them. The order:
+
+### Task 6.1: After stability, drop `support_message.message_id`
 
 **Files:** none (DBA-coordinated)
 
-**Step 1: Confirm 7+ days of clean operation**
+**Step 1: Confirm 7+ days of clean new-code operation**
 
 ```bash
 bq query --use_legacy_sql=false --format=pretty 'SELECT DATE(end_time) AS day, COUNT(*) AS cases FROM `plantstory.customer_service.support_message_cases` GROUP BY day ORDER BY day DESC LIMIT 10'
 ```
 
-**Step 2: Coordinate DBA drop of `support_message.message_id` and `support_message.channel_url`**
+Expected: a continuous run of daily case counts.
 
-Note: the runtime SQL still reads `channel_url` for the COALESCE fallback (used by 1,308 pure-old dead channels). Once the 90-day window slides past the cutoff (`2026-03-27` was the last NULL-pscid row, so window-out around 2026-06-25), `channel_url` is no longer needed and can be dropped. Until then, leaving it in source is harmless.
+**Step 2: Coordinate DBA drop of `support_message.message_id`**
 
-**Step 3: After source drop, full sanity run**
+The new runtime SQL never references `message_id` — only the *backfill* did, and that already ran. Safe to drop at any time after Phase 5 verification.
+
+**Step 3: Full sanity run**
 
 ```bash
 conda run -n dev python -m src.app_bigquery --chunk-size 80
 ```
 
-Expected: clean run, no regressions.
+Expected: no regressions.
+
+---
+
+### Task 6.2: Around 2026-06-25, remove the `channel_url` SQL fallback
+
+**Files:**
+- Modify: `src/utils.py::get_channels_to_process` (the `effective_channel_id` COALESCE)
+
+**Step 1: Confirm the rolling window has slid past 2026-03-27**
+
+```bash
+bq query --use_legacy_sql=false --format=pretty 'SELECT MIN(created_time) AS oldest_in_90d_window FROM `plantstory.public.support_message` WHERE created_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 90 DAY)'
+```
+
+Expected: `oldest_in_90d_window > 2026-03-27`.
+
+**Step 2: Verify all live messages now have `ps_channel_id`**
+
+```bash
+bq query --use_legacy_sql=false --format=pretty 'SELECT COUNTIF(ps_channel_id IS NULL) AS null_pscid_in_window FROM `plantstory.public.support_message` WHERE created_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 90 DAY) AND deleted = false'
+```
+
+Expected: `0` (or a single-digit residual that we accept losing).
+
+**Step 3: Simplify the SQL**
+
+In `src/utils.py::get_channels_to_process`, remove the `channel_mapping` CTE entirely and replace `effective_channel_id` everywhere with `ps_channel_id`. Add `WHERE sm.ps_channel_id IS NOT NULL`.
+
+**Step 4: Smoke-test, commit, deploy**
+
+Run `unit_test/test_get_channels_sql.py`. Open a small PR with the simplification. Deploy.
+
+**Step 5: After this ships, DBA may drop `support_message.channel_url`**
+
+Now that no code references it.
 
 ---
 
@@ -1444,7 +1514,7 @@ If anything in this plan refers to behavior you don't have context on, read in t
 1. `docs/plans/2026-04-29-support-message-id-migration-design.md` — the (v2) design that produced this plan
 2. `src/utils.py` — focus on `get_channels_to_process` and `preprocess_dataframe`
 3. `src/channel.py` — focus on `repair_case_segment_output` and `Channel.__init__`
-4. `src/case.py` — focus on `to_bigquery_row` and the Pydantic models
+4. `src/case.py` — focus on `save_to_bigquery` (the method that builds the `row` dict and inserts it) and the Pydantic models
 5. `src/session.py` — the CSV-input path (separate from the BigQuery-input path used by `app_bigquery.py`)
 6. `src/prompts/segmentation_prompt.md` — the LLM contract
 
