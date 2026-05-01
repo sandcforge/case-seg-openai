@@ -45,7 +45,7 @@ class MetaInfo:
 class Case:
     """Individual case structure for case segmentation output"""
     case_id: Optional[str] = None  # Case ID (assigned during processing)
-    message_id_list: List[int] = field(default_factory=list)  # List of Message ID values
+    message_id_list: List[str] = field(default_factory=list)  # List of Message ID values (nanoid strings)
     messages: Optional['pd.DataFrame'] = None  # Related messages DataFrame
     summary: str = "N/A"
     status: str = "ongoing"  # open | ongoing | resolved | blocked
@@ -185,7 +185,7 @@ class Case:
         """Convert to dictionary for JSON serialization"""
         return {
             'case_id': self.case_id,
-            'message_id_list': self.message_id_list,  # Now just a list of integers
+            'message_id_list': self.message_id_list,  # List of nanoid strings
             'messages': self.messages_to_dict,
             'summary': self.summary,
             'status': self.status,
@@ -402,7 +402,7 @@ class Case:
             "usr_msg_num": self.usr_msg_num if self.usr_msg_num != -1 else None,
             "start_time": self.start_time,
             "end_time": self.end_time,
-            "message_id_list": self.message_id_list,  # INTEGER REPEATED in BigQuery
+            "msg_id_list": self.message_id_list,  # STRING REPEATED in BigQuery
             "meta_data": json.dumps(meta_data, ensure_ascii=False)
         }
 
@@ -428,10 +428,10 @@ class Case:
 # ----------------------------
 
 class CaseSegmentationLLMRes(BaseModel):
-    """LLM-compatible case structure using List[int] for message_id_list"""
+    """LLM-compatible case structure using List[str] for message_id_list"""
     model_config = {"extra": "forbid"}
-    
-    message_id_list: List[int]  # List of message indices instead of DataFrame
+
+    message_id_list: List[str]  # List of message IDs (nanoid strings)
     summary: str
     status: str  # open | ongoing | resolved | blocked
     pending_party: str  # seller|platform|N/A
@@ -454,7 +454,7 @@ class CaseReviewInput(BaseModel):
     """Input structure for case review"""
     model_config = {"extra": "forbid"}
     cases: List[CaseSegmentationLLMRes] = Field(..., description="相关的cases列表")
-    overlap_msg_ids: List[int] = Field(..., description="重叠区域的消息ID")
+    overlap_msg_ids: List[str] = Field(..., description="重叠区域的消息ID")
     all_messages: str = Field(..., description="所有相关消息的文本")
 
 
@@ -463,7 +463,7 @@ class ReviewAction(BaseModel):
     model_config = {"extra": "forbid"}
     action_type: Literal["merge", "split", "adjust_boundary", "no_change"] = Field(..., description="操作类型")
     target_cases: List[int] = Field(..., description="目标case的索引")
-    new_msg_assignment: Dict[int, int] = Field(..., description="新的消息分配 {msg_id: case_index}")
+    new_msg_assignment: Dict[str, int] = Field(..., description="新的消息分配 {msg_id: case_index}")
     reason: str = Field(..., description="操作原因")
 
 

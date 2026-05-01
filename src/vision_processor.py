@@ -39,7 +39,7 @@ class VisionProcessor:
         
     @staticmethod
     def get_context_for_image(channel_df: pd.DataFrame,
-                             image_message_id: int,
+                             image_message_id: str,
                              context_size: int = 5) -> pd.DataFrame:
         """
         Get context messages around an image message (MESG type only)

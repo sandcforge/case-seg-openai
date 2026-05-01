@@ -53,7 +53,7 @@ class Utils:
     def format_messages_for_prompt2(chunk_df) -> str:
         """
         Format DataFrame messages in table layout with tab-separated columns
-        Columns: Message ID (11), Created Time (19), Role (6), Type (4), Message (100 chars wrap)
+        Columns: Message ID (22), Created Time (19), Role (6), Type (4), Message (100 chars wrap)
 
         Args:
             chunk_df: DataFrame with message data
@@ -66,12 +66,12 @@ class Utils:
         lines = []
         # Header - use tabs between columns
         lines.append("-" * 150)
-        lines.append(f"{'Message ID':<11}\t{'Created Time (UTC)':<19}\t{'Role':<6}\t{'Type':<4}\tMessage/File Summary")
+        lines.append(f"{'Message ID':<22}\t{'Created Time (UTC)':<19}\t{'Role':<6}\t{'Type':<4}\tMessage/File Summary")
         lines.append("-" * 150)
 
         # Process each message
         for _, row in chunk_df.iterrows():
-            message_id = str(row.get('Message ID', ''))[:10]  # Truncate to 10 chars (fits 11-char column)
+            message_id = str(row.get('Message ID', ''))[:21]  # nanoid is 21 chars
             created_time = str(row.get('Created Time', ''))[:19]  # Keep full timestamp
             role = str(row.get('role', ''))
 
@@ -106,10 +106,10 @@ class Utils:
                 message = str(message).replace('\n', ' ').replace('\r', ' ')
 
             # Format with wrapping - use tabs
-            # Prefix: msg_id(11) + tab + time(19) + tab + role(6) + tab + type(4) + tab
-            msg_prefix = f"{message_id:<11}\t{created_time:<19}\t{role:<6}\t{msg_type:<4}\t"
+            # Prefix: msg_id(22) + tab + time(19) + tab + role(6) + tab + type(4) + tab
+            msg_prefix = f"{message_id:<22}\t{created_time:<19}\t{role:<6}\t{msg_type:<4}\t"
             # Continuation indent: align to start of message column (after all tabs)
-            msg_indent = " " * 11 + "\t" + " " * 19 + "\t" + " " * 6 + "\t" + " " * 4 + "\t"
+            msg_indent = " " * 22 + "\t" + " " * 19 + "\t" + " " * 6 + "\t" + " " * 4 + "\t"
 
             # Message wraps at 100 chars
             if len(message) <= 100:
@@ -514,9 +514,9 @@ class Utils:
               AND NOT EXISTS (
                 SELECT 1
                 FROM `plantstory.customer_service.support_message_cases` seg,
-                UNNEST(seg.message_id_list) AS message_id
+                UNNEST(seg.msg_id_list) AS seg_msg_id
                 WHERE seg.channel_url = sm.channel_url
-                  AND message_id = CAST(sm.message_id AS INT64)
+                  AND seg_msg_id = sm.id
               )
             GROUP BY sm.channel_url
             HAVING messages_to_process > 0  -- 只返回有消息需要处理的 channel
@@ -527,7 +527,7 @@ class Utils:
                 cs.messages_to_process,
                 ROW_NUMBER() OVER (
                     PARTITION BY sm.channel_url
-                    ORDER BY sm.created_time, sm.message_id
+                    ORDER BY sm.created_time
                 ) as row_num
             FROM `plantstory.public.support_message` sm
             INNER JOIN channel_stats cs ON sm.channel_url = cs.channel_url
@@ -536,15 +536,15 @@ class Utils:
               AND NOT EXISTS (
                 SELECT 1
                 FROM `plantstory.customer_service.support_message_cases` seg,
-                UNNEST(seg.message_id_list) AS message_id
+                UNNEST(seg.msg_id_list) AS seg_msg_id
                 WHERE seg.channel_url = sm.channel_url
-                  AND message_id = CAST(sm.message_id AS INT64)
+                  AND seg_msg_id = sm.id
               )
         )
         SELECT * EXCEPT(messages_to_process, row_num)
         FROM ranked_messages
         WHERE row_num <= messages_to_process
-        ORDER BY channel_url, created_time, message_id
+        ORDER BY channel_url, created_time
         """
 
         import pandas as pd
@@ -580,13 +580,13 @@ class Utils:
 
         # 0. Auto-detect and convert column names if needed
         # Check if DataFrame uses snake_case (BigQuery format) by looking for key column
-        if 'message_id' in df.columns:
+        if 'id' in df.columns:
             if verbose:
                 print("        Detected snake_case column names (BigQuery format), converting to Title Case...")
 
             # Define column mapping from snake_case to Title Case
             column_mapping = {
-                'message_id': 'Message ID',
+                'id': 'Message ID',
                 'type': 'Type',
                 'message': 'Message',
                 'raw': 'Raw',
@@ -614,31 +614,25 @@ class Utils:
             if verbose:
                 print(f"        Converted {len(columns_to_rename)} column names to Title Case")
 
-            # Ensure Message ID is integer type (BigQuery returns it as string)
-            if 'Message ID' in df.columns:
-                # Convert to numeric, invalid values become NaN
-                df['Message ID'] = pd.to_numeric(df['Message ID'], errors='coerce')
-                if verbose:
-                    print(f"        Converted Message ID to numeric type")
+            if verbose:
+                if 'Message ID' in df.columns:
+                    print(f"        Message ID column mapped (string type, kept as-is)")
 
         elif 'Message ID' in df.columns:
             if verbose:
                 print("        Detected Title Case column names (CSV format), no conversion needed")
-            # Still need to ensure Message ID is numeric (may contain None/NaN from CSV)
-            df['Message ID'] = pd.to_numeric(df['Message ID'], errors='coerce')
         else:
             if verbose:
-                print("        ⚠️  Warning: Could not detect column format (neither 'message_id' nor 'Message ID' found)")
+                print("        ⚠️  Warning: Could not detect column format (neither 'id' nor 'Message ID' found)")
 
-        # 0. Filter out rows where Message ID is NaN
+        # 0. Filter out rows where Message ID is NaN/empty
         if 'Message ID' in df.columns:
             original_count = len(df)
-            df = df.dropna(subset=['Message ID']).reset_index(drop=True)
+            df['Message ID'] = df['Message ID'].astype(str)
+            df = df[df['Message ID'].notna() & (df['Message ID'] != '') & (df['Message ID'] != 'nan') & (df['Message ID'] != 'None')].reset_index(drop=True)
             filtered_count = original_count - len(df)
             if filtered_count > 0 and verbose:
                 print(f"        Filtered out {filtered_count} rows with invalid Message ID ({len(df)} remaining)")
-            # Convert to integer now that all NaN values are removed
-            df['Message ID'] = df['Message ID'].astype(int)
 
         # 1. Filter out rows where Deleted = True
         if 'Deleted' in df.columns:
@@ -662,15 +656,14 @@ class Utils:
             if verbose:
                 print("        Role column already exists, skipping...")
 
-        # 3. Sort data by Channel URL, Created Time, then Message ID
+        # 3. Sort data by Channel URL, Created Time
         # Note: Created Time is kept as ISO 8601 string format for correct lexicographic sorting
         df = df.sort_values([
             'Channel URL',
-            'Created Time',
-            'Message ID'
+            'Created Time'
         ]).reset_index(drop=True)
         if verbose:
-            print(f"        Sorted data by Channel URL, Created Time, and Message ID")
+            print(f"        Sorted data by Channel URL and Created Time")
 
         # 4. Add File Summary column for vision analysis results
         if 'File Summary' not in df.columns:

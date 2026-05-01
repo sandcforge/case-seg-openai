@@ -11,7 +11,7 @@ Message ID	Created Time (UTC)	Role	Type	Message/File Summary
 - All messages are from the same channel
 - Table includes headers and separator lines
 - Columns are separated by tabs
-- Message ID: 11 characters (10-digit database ID)
+- Message ID: 22 characters (21-character nanoid string)
 - Created Time: 19 characters, timestamps are in UTC
 - Role: 6 characters (user, cs)
 - Type: 4 characters (MESG for text messages, FILE for file attachments)
@@ -85,7 +85,7 @@ Return only:
 {
   "complete_cases": [
     {
-      "message_id_list": [4499509692, 4599500696],
+      "message_id_list": ["ZH8P72QBVKYDxvyXsmbHN", "abc123def456ghi789j"],
       "summary": "Brief description of the issue, actions taken, and resolution or attemps.",
       "status": "open|ongoing|resolved|blocked",
       "pending_party": "seller|platform|N/A",

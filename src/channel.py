@@ -557,12 +557,12 @@ class Channel:
         - 未分配：必须挂靠到合理的 case（空消息优先挂靠到相同sender的最近消息）
         - 补齐字段、排序稳定、自检报告
 
-        Note: message_id_list contains actual Message IDs from the database (e.g., 4499509692),
-              not sequential indices. chunk_df must have 'Message ID' column.
+        Note: message_id_list contains actual Message IDs (nanoid strings like "ZH8P72QBVKYDxvyXsmbHN").
+              chunk_df must have 'Message ID' column.
 
         Args
         ----
-        cases : List[Dict]      # LLM 输出的 cases (message_id_list contains actual Message IDs)
+        cases : List[Dict]      # LLM 输出的 cases (message_id_list contains nanoid strings)
         chunk_df : pd.DataFrame # DataFrame containing messages with 'Message ID' column
         prev_context : Optional[Dict]  # 上一块尾部摘要，用于承接判断
 
@@ -574,6 +574,9 @@ class Channel:
           "report": { ... }             # 自检统计
         }
         """
+        # 构建 Message ID → 索引位置 的映射，用于排序和距离计算
+        msg_id_to_index = {str(mid): idx for idx, mid in enumerate(chunk_df['Message ID'].tolist())}
+
         # 内部helper函数
         def _ensure_case_schema(c: Dict[str, Any]) -> Dict[str, Any]:
             """补齐字段、规范类型，不改入参（在外层会 deepcopy）"""
@@ -600,8 +603,8 @@ class Channel:
             
             if "message_id_list" not in c or not isinstance(c["message_id_list"], list):
                 c["message_id_list"] = []
-            # 统一整型 + 升序去重
-            c["message_id_list"] = sorted({int(x) for x in c["message_id_list"]})
+            # 统一字符串 + 按 chunk_df 索引排序去重
+            c["message_id_list"] = sorted({str(x) for x in c["message_id_list"]}, key=lambda x: msg_id_to_index.get(x, 0))
 
             for k, v in REQUIRED_FIELDS_DEFAULTS.items():
                 c.setdefault(k, copy.deepcopy(v))
@@ -676,14 +679,14 @@ class Channel:
                         return True
             return False
 
-        def _proximity_score(i: int, case: Dict[str, Any]) -> float:
+        def _proximity_score(i: str, case: Dict[str, Any]) -> float:
             ml = case.get("message_id_list", [])
             if not ml: return 0.0
-            # message_id_list contains actual Message IDs
-            dist = min(abs(i - m) for m in ml)
+            i_idx = msg_id_to_index.get(i, 0)
+            dist = min(abs(i_idx - msg_id_to_index.get(m, 0)) for m in ml)
             return 1.0 / (1 + dist)  # 1, 0.5, 0.33, ...
 
-        def _choose_one_for_duplicate(i: int, cases: List[Dict[str, Any]], cids: List[int], prev_context: Optional[Dict[str, Any]]) -> int:
+        def _choose_one_for_duplicate(i: str, cases: List[Dict[str, Any]], cids: List[int], prev_context: Optional[Dict[str, Any]]) -> int:
             # 规则：anchor_strength > 承接(prev_context) > segmentation_confidence > proximity > 较小 case_id（稳定）
             scored = []
             for cid in cids:
@@ -699,7 +702,7 @@ class Channel:
             scored.sort(reverse=True)
             return scored[0][-1]
 
-        def _is_empty_message(msg_id: int) -> bool:
+        def _is_empty_message(msg_id: str) -> bool:
             """检查消息内容是否为空或空白"""
             if msg_id not in chunk_df['Message ID'].values:
                 return True
@@ -707,7 +710,7 @@ class Channel:
             text = str(message.get('Message', '')).strip()  # Use 'Message' column as seen in Utils.format_messages_for_prompt
             return len(text) == 0
         
-        def _find_nearest_same_sender_case(msg_id: int, cases: List[Dict]) -> Optional[int]:
+        def _find_nearest_same_sender_case(msg_id: str, cases: List[Dict]) -> Optional[int]:
             """查找包含最近的相同sender_id消息的case"""
             if msg_id not in chunk_df['Message ID'].values:
                 return None
@@ -722,7 +725,8 @@ class Channel:
                 for message_id in case.get('message_id_list', []):
                     msg_to_case[message_id] = case_idx
 
-            # 寻找最近的相同sender消息
+            # 寻找最近的相同sender消息（基于索引距离）
+            msg_idx = msg_id_to_index.get(msg_id, 0)
             best_distance = float('inf')
             best_case_id = None
 
@@ -730,14 +734,14 @@ class Channel:
                 if check_msg_id in chunk_df['Message ID'].values:
                     check_sender = chunk_df[chunk_df['Message ID'] == check_msg_id].iloc[0].get('Sender ID', '')
                     if check_sender == target_sender:
-                        distance = abs(check_msg_id - msg_id)
+                        distance = abs(msg_id_to_index.get(check_msg_id, 0) - msg_idx)
                         if distance < best_distance:
                             best_distance = distance
                             best_case_id = case_idx
 
             return best_case_id
         
-        def _attach_unassigned_smart(msg_id: int, cases: List[Dict]) -> Optional[int]:
+        def _attach_unassigned_smart(msg_id: str, cases: List[Dict]) -> Optional[int]:
             """智能挂靠逻辑（基于原_attach_unassigned_simple）"""
             scored = []
             for cid, c in enumerate(cases):
@@ -762,29 +766,30 @@ class Channel:
                 return None
             return cid
         
-        def _attach_to_any_nearest_case(msg_id: int, cases: List[Dict]) -> int:
+        def _attach_to_any_nearest_case(msg_id: str, cases: List[Dict]) -> int:
             """终极兜底：挂靠到任何最近的case"""
             if not cases:
                 return 0  # 如果没有cases，返回第一个（这种情况理论上不应该发生）
 
-            # 找到包含最近消息的case
+            # 找到包含最近消息的case（基于索引距离）
+            msg_idx = msg_id_to_index.get(msg_id, 0)
             best_distance = float('inf')
             best_case_id = 0
 
             for case_idx, case in enumerate(cases):
                 for message_id in case.get('message_id_list', []):
-                    distance = abs(message_id - msg_id)
+                    distance = abs(msg_id_to_index.get(message_id, 0) - msg_idx)
                     if distance < best_distance:
                         best_distance = distance
                         best_case_id = case_idx
 
             return best_case_id
         
-        def _attach_to_case(msg_id: int, case_id: int, cases: List[Dict], provisionals: List[Dict], reason: str):
+        def _attach_to_case(msg_id: str, case_id: int, cases: List[Dict], provisionals: List[Dict], reason: str):
             """执行挂靠操作"""
             if case_id < len(cases):
                 cases[case_id]["message_id_list"].append(msg_id)
-                cases[case_id]["message_id_list"] = sorted(set(cases[case_id]["message_id_list"]))
+                cases[case_id]["message_id_list"] = sorted(set(cases[case_id]["message_id_list"]), key=lambda x: msg_id_to_index.get(x, 0))
                 provisionals.append({
                     "type": "auto_attach",
                     "msg_idx": msg_id,
@@ -792,8 +797,8 @@ class Channel:
                     "reason": reason
                 })
         
-        # 使用实际的Message ID列表
-        chunk_msg_ids = chunk_df['Message ID'].tolist()
+        # 使用实际的Message ID列表（字符串）
+        chunk_msg_ids = [str(x) for x in chunk_df['Message ID'].tolist()]
             
         out = copy.deepcopy(cases)
 
@@ -803,7 +808,7 @@ class Channel:
 
         # 2) case 内排序稳定 + 去空 case
         out = [c for c in out if c["message_id_list"]]
-        out.sort(key=lambda c: (c["message_id_list"][0], c.get("segmentation_confidence", 0.0) * -1))
+        out.sort(key=lambda c: (msg_id_to_index.get(c["message_id_list"][0], 0), c.get("segmentation_confidence", 0.0) * -1))
 
         # 3) 建立 msg -> cases 反查
         msg_to_cases = defaultdict(list)
@@ -841,9 +846,9 @@ class Channel:
                 msg_to_cases[i].append(cid)
 
         # 6) 识别未分配
-        chunk_set = set(int(x) for x in chunk_msg_ids)
+        chunk_set = set(str(x) for x in chunk_msg_ids)
         assigned = set(msg_to_cases.keys())
-        unassigned = sorted(list(chunk_set - assigned))
+        unassigned = sorted(list(chunk_set - assigned), key=lambda x: msg_id_to_index.get(x, 0))
 
         # 7) 挂靠未分配（必须全部挂靠，三层优先级）
         for i in unassigned:
@@ -870,8 +875,8 @@ class Channel:
             # 执行挂靠（cid保证不为None）
             _attach_to_case(i, cid, out, provisionals, reason)
 
-        # 8) 最终排序稳定（按最小 msg 升序）
-        out.sort(key=lambda c: c["message_id_list"][0])
+        # 8) 最终排序稳定（按最小 msg 索引升序）
+        out.sort(key=lambda c: msg_id_to_index.get(c["message_id_list"][0], 0))
 
         # 9) 自检报告
         # 9.1 统计重复与覆盖率
